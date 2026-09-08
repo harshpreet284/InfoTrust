@@ -1,0 +1,88 @@
+# ===== Python / Django =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+
+# ===== Node / React / Vite =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# ===== Environment & Secrets =====
+.env
+.env.*
+!.env.example
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===== Testing & Coverage =====
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+.pytest_cache/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ===== ML Model Artifacts =====
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+model_artifacts/
+checkpoints/
+
+# ===== Docker =====
+.docker/
+
+# ===== Misc =====
+*.bak
+*.tmp
+*.temp
+*.pid
