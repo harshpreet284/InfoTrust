@@ -542,3 +542,79 @@ class CurrentUserAPITests(TestCase):
         
         self.assertEqual(response.status_code, 401)
         self.assertIn("detail", response.json())
+
+from django.test import RequestFactory
+from ninja.errors import HttpError
+from authentication.permissions import RoleAuth
+
+class RBACIntegrationTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.factory = RequestFactory()
+        
+        # User 1: USER role
+        self.user_obj = User.objects.create_user(
+            email="user_role@example.com",
+            full_name="User Role User",
+            password="StrongPassword123!"
+        )
+        # User 2: ADMIN role
+        self.admin_obj = User.objects.create_superuser(
+            email="admin_role@example.com",
+            full_name="Admin Role User",
+            password="StrongPassword123!"
+        )
+
+    def _get_access_token(self, email, password):
+        payload = {"email": email, "password": password}
+        response = self.client.post('/api/v1/auth/login', data=json.dumps(payload), content_type="application/json")
+        return response.json().get("data", {}).get("access_token")
+
+    def test_rbac_allows_user_and_admin(self):
+        """Test that GET /me accepts both USER and ADMIN due to RoleAuth(['USER', 'ADMIN'])."""
+        user_token = self._get_access_token("user_role@example.com", "StrongPassword123!")
+        admin_token = self._get_access_token("admin_role@example.com", "StrongPassword123!")
+        
+        user_headers = {'HTTP_AUTHORIZATION': f'Bearer {user_token}'}
+        res_user = self.client.get('/api/v1/auth/me', **user_headers)
+        self.assertEqual(res_user.status_code, 200)
+        
+        admin_headers = {'HTTP_AUTHORIZATION': f'Bearer {admin_token}'}
+        res_admin = self.client.get('/api/v1/auth/me', **admin_headers)
+        self.assertEqual(res_admin.status_code, 200)
+
+    def test_rbac_rejects_unauthenticated(self):
+        """Test that an unauthenticated request to an RBAC-protected route remains 401."""
+        response = self.client.get('/api/v1/auth/me')
+        self.assertEqual(response.status_code, 401)
+
+    def test_rbac_rejects_user_from_admin_only_requirement(self):
+        """Test RoleAuth directly to prove it rejects USER with 403 when ADMIN is required."""
+        user_token = self._get_access_token("user_role@example.com", "StrongPassword123!")
+        request = self.factory.get('/dummy-url')
+        
+        auth = RoleAuth(["ADMIN"])
+        
+        with self.assertRaises(HttpError) as context:
+            auth.authenticate(request, user_token)
+            
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertEqual(str(context.exception), "You do not have permission to perform this action.")
+
+    def test_rbac_fails_closed_on_unknown_role(self):
+        """Test that a garbage role fails closed (403)."""
+        # Give admin a garbage role directly in DB (simulating an unexpected state)
+        self.admin_obj.role = "UNKNOWN_ROLE"
+        self.admin_obj.save()
+        
+        token = self._get_access_token("admin_role@example.com", "StrongPassword123!")
+        request = self.factory.get('/dummy-url')
+        
+        # Test against the standard /me endpoint's requirement
+        auth = RoleAuth(["USER", "ADMIN"])
+        
+        with self.assertRaises(HttpError) as context:
+            auth.authenticate(request, token)
+            
+        self.assertEqual(context.exception.status_code, 403)
+
