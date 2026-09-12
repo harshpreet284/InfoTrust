@@ -1,11 +1,21 @@
+import { useLocation } from "react-router-dom";
 import { FormContainer } from "../../components/ui/FormContainer";
 
 export function LoginPage() {
+  const location = useLocation();
+  const successMessage = location.state?.message;
+
   return (
     <FormContainer 
       title="Welcome back" 
       description="Enter your credentials to access your account."
     >
+      {successMessage && (
+        <div className="bg-green-50 text-green-700 p-3 rounded-lg text-sm font-medium mb-6">
+          {successMessage}
+        </div>
+      )}
+
       <form className="space-y-5" onSubmit={(e) => e.preventDefault()}>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="email">
