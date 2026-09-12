@@ -1,6 +1,37 @@
 import uuid
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
+from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.db import models
+
+
+class UserManager(BaseUserManager):
+    def create_user(self, email, full_name, password=None, **extra_fields):
+        if not email:
+            raise ValueError('The Email field must be set')
+        if not full_name:
+            raise ValueError('The Full Name field must be set')
+        
+        email = self.normalize_email(email)
+        extra_fields.setdefault('role', 'USER')
+        
+        user = self.model(email=email, full_name=full_name, **extra_fields)
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+        
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, full_name, password=None, **extra_fields):
+        extra_fields.setdefault('role', 'ADMIN')
+        extra_fields.setdefault('is_superuser', True)
+
+        if extra_fields.get('role') != 'ADMIN':
+            raise ValueError('Superuser must have role=ADMIN.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
+        return self.create_user(email, full_name, password, **extra_fields)
 
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -19,6 +50,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['full_name']
+
+    objects = UserManager()
 
     def __str__(self):
         return self.email
