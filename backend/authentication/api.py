@@ -1,6 +1,6 @@
 from ninja import Router
-from authentication.schemas import RegistrationIn, RegistrationSuccessOut, LoginIn, LoginSuccessOut, RefreshTokenIn, RefreshSuccessOut
-from authentication.services import register_user, authenticate_user, refresh_access_token
+from authentication.schemas import RegistrationIn, RegistrationSuccessOut, LoginIn, LoginSuccessOut, RefreshTokenIn, RefreshSuccessOut, LogoutSuccessOut
+from authentication.services import register_user, authenticate_user, refresh_access_token, logout_user
 from authentication.exceptions import DuplicateEmailError, InvalidCredentialsError, AccountDisabledError, InvalidTokenError
 
 # Minimal router for the authentication app
@@ -33,5 +33,13 @@ def refresh(request, payload: RefreshTokenIn):
     try:
         result = refresh_access_token(payload)
         return 200, {"success": True, "message": "Token refreshed successfully.", "data": result}
+    except InvalidTokenError as e:
+        return 401, {"success": False, "message": str(e)}
+
+@router.post("/logout", response={200: LogoutSuccessOut, 401: dict})
+def logout(request, payload: RefreshTokenIn):
+    try:
+        logout_user(payload)
+        return 200, {"success": True, "message": "Logged out successfully.", "data": {}}
     except InvalidTokenError as e:
         return 401, {"success": False, "message": str(e)}

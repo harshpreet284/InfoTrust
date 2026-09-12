@@ -77,3 +77,15 @@ def refresh_access_token(payload: RefreshTokenIn) -> dict:
         "access_token": output_schema.access,
         "refresh_token": output_schema.refresh
     }
+
+def logout_user(payload: RefreshTokenIn) -> None:
+    """
+    Validates a refresh token and blacklists it, invalidating future refresh attempts.
+    """
+    from ninja_jwt.schema import TokenBlacklistInputSchema
+    from ninja_jwt.exceptions import InvalidToken
+
+    try:
+        TokenBlacklistInputSchema(refresh=payload.refresh_token)
+    except InvalidToken:
+        raise InvalidTokenError("Invalid or expired refresh token.")

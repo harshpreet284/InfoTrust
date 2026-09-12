@@ -391,3 +391,84 @@ class RefreshTokenAPITests(TestCase):
         response = self.client.post(self.url, data=json.dumps({}), content_type="application/json")
         self.assertEqual(response.status_code, 422)
         self.assertIn("detail", response.json())
+
+class LogoutAPITests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.url = '/api/v1/auth/logout'
+        self.user = User.objects.create_user(
+            email="logout_test@example.com",
+            full_name="Logout Test User",
+            password="StrongPassword123!"
+        )
+        self.login_payload = {
+            "email": "logout_test@example.com",
+            "password": "StrongPassword123!"
+        }
+
+    def _get_refresh_token(self):
+        response = self.client.post('/api/v1/auth/login', data=json.dumps(self.login_payload), content_type="application/json")
+        return response.json().get("data", {}).get("refresh_token")
+
+    def test_logout_success(self):
+        """Test successful logout using a valid refresh token."""
+        refresh_token = self._get_refresh_token()
+        payload = {"refresh_token": refresh_token}
+        
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("message"), "Logged out successfully.")
+        self.assertEqual(data.get("data"), {})
+
+    def test_logout_blacklists_token(self):
+        """Test that a logged-out token is successfully blacklisted and rejected by /refresh."""
+        refresh_token = self._get_refresh_token()
+        payload = {"refresh_token": refresh_token}
+        
+        # 1. Logout
+        logout_res = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(logout_res.status_code, 200)
+        
+        # 2. Attempt to refresh with blacklisted token
+        refresh_res = self.client.post('/api/v1/auth/refresh', data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(refresh_res.status_code, 401)
+        
+        err_data = refresh_res.json()
+        self.assertFalse(err_data.get("success"))
+        self.assertEqual(err_data.get("message"), "Invalid or expired refresh token.")
+
+    def test_logout_fails_with_invalid_refresh_token(self):
+        """Test that a malformed refresh token returns 401 Invalid Token."""
+        payload = {"refresh_token": "not.a.valid.jwt"}
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        
+        self.assertEqual(response.status_code, 401)
+        err_data = response.json()
+        self.assertFalse(err_data.get("success"))
+        self.assertEqual(err_data.get("message"), "Invalid or expired refresh token.")
+
+    def test_logout_fails_with_already_blacklisted_token(self):
+        """Test that attempting to logout twice with the same token returns 401."""
+        refresh_token = self._get_refresh_token()
+        payload = {"refresh_token": refresh_token}
+        
+        # 1. Logout successfully
+        res1 = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(res1.status_code, 200)
+        
+        # 2. Try to logout again
+        res2 = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(res2.status_code, 401)
+        
+        err_data = res2.json()
+        self.assertFalse(err_data.get("success"))
+        self.assertEqual(err_data.get("message"), "Invalid or expired refresh token.")
+
+    def test_logout_missing_fields(self):
+        """Test that missing refresh_token payload field returns 422."""
+        response = self.client.post(self.url, data=json.dumps({}), content_type="application/json")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("detail", response.json())

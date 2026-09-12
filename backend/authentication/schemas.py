@@ -83,3 +83,8 @@ class RefreshSuccessOut(Schema):
     success: bool = True
     message: str = "Token refreshed successfully."
     data: RefreshDataOut
+
+class LogoutSuccessOut(Schema):
+    success: bool = True
+    message: str = "Logged out successfully."
+    data: dict = {}
