@@ -1,5 +1,6 @@
 from ninja import Router
-from authentication.schemas import RegistrationIn, RegistrationSuccessOut, LoginIn, LoginSuccessOut, RefreshTokenIn, RefreshSuccessOut, LogoutSuccessOut
+from ninja_jwt.authentication import JWTAuth
+from authentication.schemas import RegistrationIn, RegistrationSuccessOut, LoginIn, LoginSuccessOut, RefreshTokenIn, RefreshSuccessOut, LogoutSuccessOut, CurrentUserSuccessOut
 from authentication.services import register_user, authenticate_user, refresh_access_token, logout_user
 from authentication.exceptions import DuplicateEmailError, InvalidCredentialsError, AccountDisabledError, InvalidTokenError
 
@@ -43,3 +44,7 @@ def logout(request, payload: RefreshTokenIn):
         return 200, {"success": True, "message": "Logged out successfully.", "data": {}}
     except InvalidTokenError as e:
         return 401, {"success": False, "message": str(e)}
+
+@router.get("/me", response={200: CurrentUserSuccessOut}, auth=JWTAuth())
+def get_current_user(request):
+    return 200, {"success": True, "message": "User profile retrieved successfully.", "data": request.user}

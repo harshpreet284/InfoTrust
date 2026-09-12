@@ -472,3 +472,73 @@ class LogoutAPITests(TestCase):
         response = self.client.post(self.url, data=json.dumps({}), content_type="application/json")
         self.assertEqual(response.status_code, 422)
         self.assertIn("detail", response.json())
+
+class CurrentUserAPITests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.url = '/api/v1/auth/me'
+        self.user = User.objects.create_user(
+            email="me_test@example.com",
+            full_name="Me Test User",
+            password="StrongPassword123!"
+        )
+        self.login_payload = {
+            "email": "me_test@example.com",
+            "password": "StrongPassword123!"
+        }
+
+    def _get_access_token(self):
+        response = self.client.post('/api/v1/auth/login', data=json.dumps(self.login_payload), content_type="application/json")
+        return response.json().get("data", {}).get("access_token")
+
+    def test_get_current_user_success(self):
+        """Test successful retrieval of current user profile."""
+        access_token = self._get_access_token()
+        headers = {'HTTP_AUTHORIZATION': f'Bearer {access_token}'}
+        
+        response = self.client.get(self.url, **headers)
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("message"), "User profile retrieved successfully.")
+        
+        user_data = data.get("data", {})
+        self.assertEqual(user_data.get("id"), str(self.user.id))
+        self.assertEqual(user_data.get("email"), "me_test@example.com")
+        self.assertEqual(user_data.get("full_name"), "Me Test User")
+        self.assertEqual(user_data.get("role"), "USER")
+        self.assertIn("created_at", user_data)
+        self.assertTrue(user_data.get("is_active"))
+        
+        # Verify sensitive fields are absent
+        self.assertNotIn("password", user_data)
+        self.assertNotIn("is_superuser", user_data)
+        self.assertNotIn("is_staff", user_data)
+
+    def test_get_current_user_unauthorized(self):
+        """Test that missing Authorization header returns 401."""
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json().get("detail"), "Unauthorized")
+
+    def test_get_current_user_invalid_token(self):
+        """Test that invalid Bearer token returns 401."""
+        headers = {'HTTP_AUTHORIZATION': 'Bearer invalid.token.here'}
+        response = self.client.get(self.url, **headers)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("detail", response.json())
+
+    def test_get_current_user_disabled_account(self):
+        """Test that a deactivated user's previously issued token returns 401."""
+        access_token = self._get_access_token()
+        
+        # Deactivate user in DB
+        self.user.is_active = False
+        self.user.save()
+        
+        headers = {'HTTP_AUTHORIZATION': f'Bearer {access_token}'}
+        response = self.client.get(self.url, **headers)
+        
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("detail", response.json())

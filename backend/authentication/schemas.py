@@ -88,3 +88,16 @@ class LogoutSuccessOut(Schema):
     success: bool = True
     message: str = "Logged out successfully."
     data: dict = {}
+
+class CurrentUserOut(Schema):
+    id: uuid.UUID
+    full_name: str
+    email: str
+    role: str
+    created_at: datetime
+    is_active: bool
+
+class CurrentUserSuccessOut(Schema):
+    success: bool = True
+    message: str = "User profile retrieved successfully."
+    data: CurrentUserOut
