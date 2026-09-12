@@ -178,3 +178,53 @@ class LoginSerializerTests(TestCase):
         with self.assertRaises(ValidationError) as context:
             LoginIn.model_validate(payload)
         self.assertIn("email", str(context.exception))
+
+import jwt
+from django.conf import settings
+from authentication.services import authenticate_user
+from authentication.exceptions import InvalidCredentialsError, AccountDisabledError
+
+class LoginServiceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="service@example.com",
+            full_name="Service User",
+            password="StrongPassword123!"
+        )
+        
+    def test_service_login_success(self):
+        payload = LoginIn(email="service@example.com", password="StrongPassword123!")
+        result = authenticate_user(payload)
+        
+        self.assertEqual(result["user"], self.user)
+        self.assertTrue(isinstance(result["access_token"], str))
+        self.assertTrue(isinstance(result["refresh_token"], str))
+        self.assertTrue(len(result["access_token"]) > 0)
+        
+        # Verify JWT claims
+        decoded_access = jwt.decode(result["access_token"], settings.SECRET_KEY, algorithms=["HS256"])
+        self.assertEqual(decoded_access["token_type"], "access")
+        self.assertEqual(decoded_access["user_id"], str(self.user.id))
+        self.assertIn("exp", decoded_access)
+        self.assertIn("iat", decoded_access)
+        self.assertIn("jti", decoded_access)
+
+    def test_service_login_wrong_email(self):
+        payload = LoginIn(email="wrong@example.com", password="StrongPassword123!")
+        with self.assertRaises(InvalidCredentialsError) as context:
+            authenticate_user(payload)
+        self.assertEqual(str(context.exception), "Invalid email or password.")
+        
+    def test_service_login_wrong_password(self):
+        payload = LoginIn(email="service@example.com", password="WrongPassword123!")
+        with self.assertRaises(InvalidCredentialsError) as context:
+            authenticate_user(payload)
+        self.assertEqual(str(context.exception), "Invalid email or password.")
+        
+    def test_service_login_inactive_user(self):
+        self.user.is_active = False
+        self.user.save()
+        payload = LoginIn(email="service@example.com", password="StrongPassword123!")
+        with self.assertRaises(AccountDisabledError) as context:
+            authenticate_user(payload)
+        self.assertEqual(str(context.exception), "This account has been disabled.")
