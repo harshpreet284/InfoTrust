@@ -1,4 +1,6 @@
 import re
+import uuid
+from datetime import datetime
 from ninja import Schema
 from pydantic import EmailStr, field_validator, model_validator, Field
 
@@ -38,3 +40,15 @@ class RegistrationIn(Schema):
         if self.password != self.confirm_password:
             raise ValueError('Passwords do not match.')
         return self
+
+class UserOut(Schema):
+    id: uuid.UUID
+    full_name: str
+    email: str
+    role: str
+    created_at: datetime
+
+class RegistrationSuccessOut(Schema):
+    success: bool = True
+    message: str = "Registration successful."
+    data: UserOut
