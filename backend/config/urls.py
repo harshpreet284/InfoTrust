@@ -18,11 +18,15 @@ from django.contrib import admin
 from django.urls import path
 from ninja import NinjaAPI
 
+from authentication.api import router as auth_router
+
 api = NinjaAPI(
     title="InfoTrust API",
     version="1.0.0",
     description="InfoTrust — AI-Powered Misinformation Detection & Claim Analysis Platform",
 )
+
+api.add_router("/auth", auth_router)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
