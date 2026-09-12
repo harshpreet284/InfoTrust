@@ -140,3 +140,41 @@ class RegistrationAPITests(TestCase):
         user = User.objects.get(email="api@example.com")
         self.assertEqual(user.role, "USER")
         self.assertFalse(user.is_superuser)
+
+from pydantic import ValidationError
+from authentication.schemas import LoginIn
+
+class LoginSerializerTests(TestCase):
+    def test_valid_login_payload(self):
+        """Test valid email and password succeeds."""
+        payload = {"email": "test@example.com", "password": "password123"}
+        login_in = LoginIn.model_validate(payload)
+        self.assertEqual(login_in.email, "test@example.com")
+        self.assertEqual(login_in.password, "password123")
+        
+    def test_uppercase_email_normalized(self):
+        """Test uppercase email is normalized to lowercase."""
+        payload = {"email": "UPPER@Example.com", "password": "pwd"}
+        login_in = LoginIn.model_validate(payload)
+        self.assertEqual(login_in.email, "upper@example.com")
+        
+    def test_missing_email_fails(self):
+        """Test missing email fails validation."""
+        payload = {"password": "pwd"}
+        with self.assertRaises(ValidationError) as context:
+            LoginIn.model_validate(payload)
+        self.assertIn("email", str(context.exception))
+        
+    def test_missing_password_fails(self):
+        """Test missing password fails validation."""
+        payload = {"email": "test@example.com"}
+        with self.assertRaises(ValidationError) as context:
+            LoginIn.model_validate(payload)
+        self.assertIn("password", str(context.exception))
+        
+    def test_invalid_email_format(self):
+        """Test invalid email format fails validation."""
+        payload = {"email": "not-an-email", "password": "pwd"}
+        with self.assertRaises(ValidationError) as context:
+            LoginIn.model_validate(payload)
+        self.assertIn("email", str(context.exception))
