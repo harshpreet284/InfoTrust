@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 from pathlib import Path
+from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
 import urllib.parse
 
@@ -45,6 +46,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'corsheaders',
     'authentication',
+    'ninja_jwt',
+    'ninja_jwt.token_blacklist',
 ]
 
 MIDDLEWARE = [
@@ -149,3 +152,19 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# JWT Configuration
+access_lifetime = os.environ.get('ACCESS_TOKEN_LIFETIME')
+if not access_lifetime:
+    raise ImproperlyConfigured("ACCESS_TOKEN_LIFETIME environment variable is required.")
+
+refresh_lifetime = os.environ.get('REFRESH_TOKEN_LIFETIME')
+if not refresh_lifetime:
+    raise ImproperlyConfigured("REFRESH_TOKEN_LIFETIME environment variable is required.")
+
+NINJA_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(seconds=int(access_lifetime)),
+    'REFRESH_TOKEN_LIFETIME': timedelta(seconds=int(refresh_lifetime)),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+}
