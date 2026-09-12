@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
+import urllib.parse
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # We added another .parent because we moved settings inside a settings/ module
@@ -77,10 +78,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+db_url_env = os.environ.get('DATABASE_URL')
+if not db_url_env:
+    raise ImproperlyConfigured("DATABASE_URL environment variable is required.")
+
+db_url = urllib.parse.urlparse(db_url_env)
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': db_url.path.lstrip('/'),
+        'USER': urllib.parse.unquote(db_url.username or ''),
+        'PASSWORD': urllib.parse.unquote(db_url.password or ''),
+        'HOST': db_url.hostname,
+        'PORT': db_url.port or 5432,
     }
 }
 
