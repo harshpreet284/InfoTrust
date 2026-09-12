@@ -9,3 +9,7 @@ class InvalidCredentialsError(Exception):
 class AccountDisabledError(Exception):
     """Raised when a user authenticates successfully but their account is inactive."""
     pass
+
+class InvalidTokenError(Exception):
+    """Raised when a refresh token is invalid, expired, or blacklisted."""
+    pass

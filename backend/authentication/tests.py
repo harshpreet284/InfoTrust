@@ -301,3 +301,93 @@ class LoginAPITests(TestCase):
         response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
         self.assertEqual(response.status_code, 422)
         self.assertIn("detail", response.json())
+
+from ninja_jwt.tokens import RefreshToken
+from datetime import timedelta
+import time
+
+class RefreshTokenAPITests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.url = '/api/v1/auth/refresh'
+        self.user = User.objects.create_user(
+            email="refreshapi@example.com",
+            full_name="Refresh API User",
+            password="StrongPassword123!"
+        )
+        # Manually create a valid refresh token for the user
+        self.refresh = RefreshToken.for_user(self.user)
+        self.valid_payload = {
+            "refresh_token": str(self.refresh)
+        }
+
+    def test_refresh_token_success(self):
+        """Test valid refresh returns access_token and rotated refresh_token."""
+        response = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("message"), "Token refreshed successfully.")
+        
+        inner_data = data.get("data", {})
+        self.assertIn("access_token", inner_data)
+        self.assertIn("refresh_token", inner_data)
+        
+        # Verify it rotated the token
+        self.assertNotEqual(inner_data["refresh_token"], self.valid_payload["refresh_token"])
+
+    def test_refresh_token_rotation_and_blacklist(self):
+        """Test the original refresh token cannot be reused after rotation."""
+        # 1. Refresh successfully once
+        response1 = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response1.status_code, 200)
+        
+        # 2. Attempt to reuse the exact same original refresh token
+        response2 = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response2.status_code, 401)
+        data = response2.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "Invalid or expired refresh token.")
+
+    def test_new_refresh_token_works(self):
+        """Test the newly returned rotated refresh token functions correctly."""
+        # 1. Refresh successfully once
+        response1 = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response1.status_code, 200)
+        new_refresh = response1.json()["data"]["refresh_token"]
+        
+        # 2. Use the new token for a second refresh
+        payload2 = {"refresh_token": new_refresh}
+        response2 = self.client.post(self.url, data=json.dumps(payload2), content_type="application/json")
+        self.assertEqual(response2.status_code, 200)
+        
+        data = response2.json()
+        self.assertTrue(data.get("success"))
+        self.assertIn("access_token", data["data"])
+
+    def test_refresh_token_invalid_format(self):
+        """Test a malformed token returns 401 Invalid Token."""
+        payload = {"refresh_token": "not-a-valid-jwt"}
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+        data = response.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "Invalid or expired refresh token.")
+
+    def test_refresh_token_expired(self):
+        """Test an expired token returns 401. Force expiration by manually mutating claims."""
+        self.refresh.set_exp(lifetime=-timedelta(days=1))
+        payload = {"refresh_token": str(self.refresh)}
+        
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+        data = response.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "Invalid or expired refresh token.")
+
+    def test_refresh_token_missing_fields(self):
+        """Test an empty payload returns 422 Native Ninja validation."""
+        response = self.client.post(self.url, data=json.dumps({}), content_type="application/json")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("detail", response.json())

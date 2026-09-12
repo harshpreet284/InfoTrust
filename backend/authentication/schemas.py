@@ -71,3 +71,15 @@ class LoginSuccessOut(Schema):
     success: bool = True
     message: str = "Login successful."
     data: LoginDataOut
+
+class RefreshTokenIn(Schema):
+    refresh_token: str
+
+class RefreshDataOut(Schema):
+    access_token: str
+    refresh_token: str
+
+class RefreshSuccessOut(Schema):
+    success: bool = True
+    message: str = "Token refreshed successfully."
+    data: RefreshDataOut

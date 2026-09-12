@@ -1,7 +1,7 @@
 from django.db import transaction, IntegrityError
 from authentication.models import User
-from authentication.schemas import RegistrationIn, LoginIn
-from authentication.exceptions import DuplicateEmailError, InvalidCredentialsError, AccountDisabledError
+from authentication.schemas import RegistrationIn, LoginIn, RefreshTokenIn
+from authentication.exceptions import DuplicateEmailError, InvalidCredentialsError, AccountDisabledError, InvalidTokenError
 from ninja_jwt.tokens import RefreshToken
 
 def register_user(payload: RegistrationIn) -> User:
@@ -57,4 +57,23 @@ def authenticate_user(payload: LoginIn) -> dict:
         "access_token": str(refresh.access_token),
         "refresh_token": str(refresh),
         "user": user
+    }
+
+def refresh_access_token(payload: RefreshTokenIn) -> dict:
+    """
+    Validates a refresh token and returns a new access token and rotated refresh token
+    using the native django-ninja-jwt validation mechanism.
+    """
+    from ninja_jwt.schema import TokenRefreshInputSchema
+    from ninja_jwt.exceptions import InvalidToken
+
+    try:
+        ninja_payload = TokenRefreshInputSchema(refresh=payload.refresh_token)
+        output_schema = ninja_payload.to_response_schema()
+    except InvalidToken:
+        raise InvalidTokenError("Invalid or expired refresh token.")
+        
+    return {
+        "access_token": output_schema.access,
+        "refresh_token": output_schema.refresh
     }
