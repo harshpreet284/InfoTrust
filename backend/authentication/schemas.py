@@ -61,3 +61,13 @@ class LoginIn(Schema):
     @classmethod
     def lowercase_email(cls, v: str) -> str:
         return v.lower()
+
+class LoginDataOut(Schema):
+    access_token: str
+    refresh_token: str
+    user: UserOut
+
+class LoginSuccessOut(Schema):
+    success: bool = True
+    message: str = "Login successful."
+    data: LoginDataOut

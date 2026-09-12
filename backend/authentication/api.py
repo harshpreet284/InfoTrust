@@ -1,7 +1,7 @@
 from ninja import Router
-from authentication.schemas import RegistrationIn, RegistrationSuccessOut
-from authentication.services import register_user
-from authentication.exceptions import DuplicateEmailError
+from authentication.schemas import RegistrationIn, RegistrationSuccessOut, LoginIn, LoginSuccessOut
+from authentication.services import register_user, authenticate_user
+from authentication.exceptions import DuplicateEmailError, InvalidCredentialsError, AccountDisabledError
 
 # Minimal router for the authentication app
 router = Router()
@@ -17,3 +17,13 @@ def register(request, payload: RegistrationIn):
             "message": "Email already exists.",
             "errors": {"email": [str(e)]}
         }
+
+@router.post("/login", response={200: LoginSuccessOut, 401: dict, 403: dict})
+def login(request, payload: LoginIn):
+    try:
+        result = authenticate_user(payload)
+        return 200, {"success": True, "message": "Login successful.", "data": result}
+    except InvalidCredentialsError as e:
+        return 401, {"success": False, "message": str(e)}
+    except AccountDisabledError as e:
+        return 403, {"success": False, "message": str(e)}

@@ -228,3 +228,76 @@ class LoginServiceTests(TestCase):
         with self.assertRaises(AccountDisabledError) as context:
             authenticate_user(payload)
         self.assertEqual(str(context.exception), "This account has been disabled.")
+
+class LoginAPITests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.url = '/api/v1/auth/login'
+        self.user = User.objects.create_user(
+            email="loginapi@example.com",
+            full_name="Login API User",
+            password="StrongPassword123!"
+        )
+        self.valid_payload = {
+            "email": "loginapi@example.com",
+            "password": "StrongPassword123!"
+        }
+        
+    def test_api_login_success(self):
+        response = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("message"), "Login successful.")
+        
+        inner_data = data.get("data", {})
+        self.assertIn("access_token", inner_data)
+        self.assertIn("refresh_token", inner_data)
+        
+        user_data = inner_data.get("user", {})
+        self.assertEqual(user_data.get("email"), "loginapi@example.com")
+        self.assertEqual(user_data.get("full_name"), "Login API User")
+        self.assertIn("id", user_data)
+        self.assertIn("role", user_data)
+        
+        # Verify sensitive fields are omitted
+        self.assertNotIn("password", user_data)
+        self.assertNotIn("is_active", user_data)
+        self.assertNotIn("is_superuser", user_data)
+        self.assertNotIn("is_staff", user_data)
+        
+    def test_api_login_wrong_email(self):
+        payload = self.valid_payload.copy()
+        payload["email"] = "wrong@example.com"
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+        data = response.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "Invalid email or password.")
+        self.assertNotIn("errors", data)
+        
+    def test_api_login_wrong_password(self):
+        payload = self.valid_payload.copy()
+        payload["password"] = "wrong"
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+        data = response.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "Invalid email or password.")
+        self.assertNotIn("errors", data)
+        
+    def test_api_login_inactive_user(self):
+        self.user.is_active = False
+        self.user.save()
+        response = self.client.post(self.url, data=json.dumps(self.valid_payload), content_type="application/json")
+        self.assertEqual(response.status_code, 403)
+        data = response.json()
+        self.assertFalse(data.get("success"))
+        self.assertEqual(data.get("message"), "This account has been disabled.")
+        
+    def test_api_login_missing_fields(self):
+        payload = {"email": "loginapi@example.com"}
+        response = self.client.post(self.url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("detail", response.json())
