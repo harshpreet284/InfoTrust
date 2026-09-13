@@ -72,12 +72,8 @@ export const authService = {
     return response.data;
   },
 
-  async getCurrentUser(accessToken: string): Promise<CurrentUserSuccessResponse> {
-    const response = await apiClient.get<CurrentUserSuccessResponse>('/auth/me', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
+  async getCurrentUser(): Promise<CurrentUserSuccessResponse> {
+    const response = await apiClient.get<CurrentUserSuccessResponse>('/auth/me');
     return response.data;
   },
 };

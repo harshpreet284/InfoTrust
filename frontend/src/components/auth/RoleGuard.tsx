@@ -27,7 +27,7 @@ export function RoleGuard({ allowedRoles }: RoleGuardProps) {
       }
       
       try {
-        const response = await authService.getCurrentUser(token);
+        const response = await authService.getCurrentUser();
         if (isMounted) {
           setRole(response.data?.role || null);
         }

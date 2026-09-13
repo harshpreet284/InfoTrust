@@ -12,6 +12,10 @@ export function LogoutButton() {
     setIsLoggingOut(true);
     const refreshToken = tokenStorage.getRefreshToken();
     
+    // Clear tokens synchronously to immediately increment session generation
+    // and prevent race conditions with in-flight refreshes
+    tokenStorage.clearTokens();
+
     if (refreshToken) {
       try {
         await authService.logout(refreshToken);
@@ -21,7 +25,6 @@ export function LogoutButton() {
       }
     }
     
-    tokenStorage.clearTokens();
     navigate("/login", { replace: true });
   };
 

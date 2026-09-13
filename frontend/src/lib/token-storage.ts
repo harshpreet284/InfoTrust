@@ -1,6 +1,8 @@
 const ACCESS_TOKEN_KEY = 'infotrust_access_token';
 const REFRESH_TOKEN_KEY = 'infotrust_refresh_token';
 
+let sessionGeneration = 0;
+
 export const tokenStorage = {
   getAccessToken(): string | null {
     return sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -13,14 +15,20 @@ export const tokenStorage = {
   setTokens(accessToken: string, refreshToken: string): void {
     sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
     sessionStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+    sessionGeneration++;
   },
 
   clearTokens(): void {
     sessionStorage.removeItem(ACCESS_TOKEN_KEY);
     sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+    sessionGeneration++;
   },
 
   hasTokens(): boolean {
     return !!this.getAccessToken() && !!this.getRefreshToken();
+  },
+
+  getGeneration(): number {
+    return sessionGeneration;
   }
 };
