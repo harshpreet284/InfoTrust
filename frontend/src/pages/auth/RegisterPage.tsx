@@ -33,39 +33,55 @@ export function RegisterPage() {
         state: { message: "Registration successful. Please log in." },
       });
     } catch (error) {
-      if (isAxiosError(error) && error.response) {
-        const { status, data: errorData } = error.response;
+      if (isAxiosError(error)) {
+        if (error.response) {
+          const { status, data: errorData } = error.response;
 
-        // 409 Conflict - e.g., duplicate email
-        if (status === 409 && errorData.errors) {
-          Object.entries(errorData.errors).forEach(([field, messages]) => {
-            setError(field as keyof RegistrationFormValues, {
-              type: "server",
-              message: (messages as string[])[0]
-            });
-          });
-          return;
-        }
-
-        // 422 Validation Error - Django Ninja native format
-        if (status === 422 && Array.isArray(errorData.detail)) {
-          errorData.detail.forEach((err: any) => {
-            const field = err.loc?.[err.loc.length - 1];
-            if (field && ["full_name", "email", "password", "confirm_password"].includes(field)) {
+          // 409 Conflict - e.g., duplicate email
+          if (status === 409 && errorData?.errors) {
+            Object.entries(errorData.errors).forEach(([field, messages]) => {
               setError(field as keyof RegistrationFormValues, {
                 type: "server",
-                message: err.msg
+                message: (messages as string[])[0]
               });
-            } else {
-              // Unmappable validation error
-              setRootError(err.msg || "A validation error occurred.");
-            }
-          });
+            });
+            return;
+          }
+
+          // 422 Validation Error - Django Ninja native format
+          if (status === 422 && Array.isArray(errorData?.detail)) {
+            errorData.detail.forEach((err: any) => {
+              const field = err.loc?.[err.loc.length - 1];
+              if (field && ["full_name", "email", "password", "confirm_password"].includes(field)) {
+                setError(field as keyof RegistrationFormValues, {
+                  type: "server",
+                  message: err.msg
+                });
+              } else {
+                // Unmappable validation error
+                setRootError(err.msg || "A validation error occurred.");
+              }
+            });
+            return;
+          }
+
+          // 5xx Server Errors (mask internal details)
+          if (status >= 500) {
+            setRootError("A server error occurred. Please try again later.");
+            return;
+          }
+        } else if (error.code === 'ECONNABORTED') {
+          // Timeout
+          setRootError("The request timed out. Please check your connection and try again.");
+          return;
+        } else if (error.request) {
+          // Network error (no response received)
+          setRootError("Network error. Please check your connection and try again.");
           return;
         }
       }
 
-      // Generic fallback error
+      // Safe fallback for entirely unknown errors
       setRootError("An unexpected error occurred. Please try again.");
     }
   };

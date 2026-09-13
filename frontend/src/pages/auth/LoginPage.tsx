@@ -43,32 +43,49 @@ export function LoginPage() {
       const from = location.state?.from?.pathname || "/";
       navigate(from, { replace: true });
     } catch (error) {
-      if (isAxiosError(error) && error.response) {
-        const { status, data: errorData } = error.response;
+      if (isAxiosError(error)) {
+        if (error.response) {
+          const { status, data: errorData } = error.response;
 
-        // 401 or 403
-        if ((status === 401 || status === 403) && errorData.message) {
-          setRootError(errorData.message);
+          // 401 or 403
+          if ((status === 401 || status === 403) && errorData?.message) {
+            setRootError(errorData.message);
+            return;
+          }
+
+          // 422 Validation Error - Django Ninja native format
+          if (status === 422 && Array.isArray(errorData?.detail)) {
+            errorData.detail.forEach((err: any) => {
+              const field = err.loc?.[err.loc.length - 1];
+              if (field && ["email", "password"].includes(field)) {
+                setError(field as keyof LoginFormValues, {
+                  type: "server",
+                  message: err.msg
+                });
+              } else {
+                setRootError(err.msg || "A validation error occurred.");
+              }
+            });
+            return;
+          }
+
+          // 5xx Server Errors (mask internal details)
+          if (status >= 500) {
+            setRootError("A server error occurred. Please try again later.");
+            return;
+          }
+        } else if (error.code === 'ECONNABORTED') {
+          // Timeout
+          setRootError("The request timed out. Please check your connection and try again.");
           return;
-        }
-
-        // 422 Validation Error - Django Ninja native format
-        if (status === 422 && Array.isArray(errorData.detail)) {
-          errorData.detail.forEach((err: any) => {
-            const field = err.loc?.[err.loc.length - 1];
-            if (field && ["email", "password"].includes(field)) {
-              setError(field as keyof LoginFormValues, {
-                type: "server",
-                message: err.msg
-              });
-            } else {
-              setRootError(err.msg || "A validation error occurred.");
-            }
-          });
+        } else if (error.request) {
+          // Network error (no response received)
+          setRootError("Network error. Please check your connection and try again.");
           return;
         }
       }
 
+      // Safe fallback for entirely unknown errors
       setRootError("An unexpected error occurred. Please try again.");
     }
   };
