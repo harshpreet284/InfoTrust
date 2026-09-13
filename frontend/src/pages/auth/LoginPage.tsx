@@ -11,6 +11,7 @@ import { LoginSchema } from "../../schemas/auth.schema";
 import type { LoginFormValues } from "../../schemas/auth.schema";
 import { authService } from "../../services/auth.service";
 import type { UserOut } from "../../services/auth.service";
+import { tokenStorage } from "../../lib/token-storage";
 
 export function LoginPage() {
   const location = useLocation();
@@ -32,7 +33,8 @@ export function LoginPage() {
     setRootError(null);
     try {
       const response = await authService.login(data);
-      // Success: show local success state, discard tokens
+      // Success: store tokens and show local success state
+      tokenStorage.setTokens(response.data.access_token, response.data.refresh_token);
       setLoggedInUser(response.data.user);
     } catch (error) {
       if (isAxiosError(error) && error.response) {
@@ -65,6 +67,20 @@ export function LoginPage() {
     }
   };
 
+  const handleLogout = async () => {
+    const refreshToken = tokenStorage.getRefreshToken();
+    if (refreshToken) {
+      try {
+        await authService.logout(refreshToken);
+      } catch (error) {
+        // Log out locally even if the server request fails (e.g., token already invalid)
+        console.warn("Server logout failed or token invalid.", error);
+      }
+    }
+    tokenStorage.clearTokens();
+    setLoggedInUser(null);
+  };
+
   if (loggedInUser) {
     return (
       <FormContainer
@@ -74,15 +90,15 @@ export function LoginPage() {
         <div className="bg-green-50 text-green-700 p-4 rounded-lg border border-green-200">
           <p className="font-medium">Welcome back, {loggedInUser.full_name}!</p>
           <p className="text-sm mt-2 opacity-90">
-            Note: Persistent authentication is not yet implemented. Your session will not be saved.
+            Note: Tokens are securely stored in your browser's session storage. You are authenticated until you close this tab or log out.
           </p>
         </div>
         <div className="mt-6">
           <button
-            onClick={() => setLoggedInUser(null)}
+            onClick={handleLogout}
             className="w-full flex justify-center items-center py-2.5 px-4 border border-slate-300 rounded-lg shadow-sm text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors"
           >
-            Sign in as another user
+            Sign out
           </button>
         </div>
       </FormContainer>
