@@ -302,7 +302,7 @@ Install Backend Dependencies
 
 - Django
 - Django Ninja
-- Simple JWT
+- django-ninja-jwt
 - psycopg
 - django-cors-headers
 - python-dotenv
@@ -609,7 +609,7 @@ Requires:
 - Milestone 1 completed
 - PostgreSQL configured
 - Django Ninja installed
-- Simple JWT configured
+- django-ninja-jwt configured
 
 ---
 
@@ -717,7 +717,7 @@ Configure JWT Authentication
 
 ### Tasks
 
-- Configure Simple JWT
+- Configure django-ninja-jwt
 - Configure authentication classes
 - Configure access token lifetime
 - Configure refresh token lifetime

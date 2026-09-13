@@ -829,7 +829,8 @@ Refresh Token Required
 
 - Refresh token must be valid.
 - Blacklisted tokens are rejected.
-- Only a new access token is returned.
+- A new access token and a new rotated refresh token are returned.
+- The old refresh token is blacklisted.
 
 ---
 
@@ -842,7 +843,8 @@ HTTP **200 OK**
   "success": true,
   "message": "Token refreshed successfully.",
   "data": {
-    "access_token": "<new_access_token>"
+    "access_token": "<new_access_token>",
+    "refresh_token": "<new_refresh_token>"
   }
 }
 ```
@@ -881,7 +883,7 @@ POST
 
 ## Authentication
 
-Required
+Refresh Token Required — Access-token JWTAuth is not required; logout authenticates using the submitted `refresh_token` payload.
 
 ---
 
@@ -1049,8 +1051,8 @@ Refresh Token Blacklisted
 |----------|--------|---------------|-------------|
 | /auth/register | POST | No | Register a new user |
 | /auth/login | POST | No | Authenticate and receive JWT tokens |
-| /auth/refresh | POST | Refresh Token | Issue a new access token |
-| /auth/logout | POST | Yes | Logout and blacklist refresh token |
+| /auth/refresh | POST | Refresh Token | Issue new access and refresh tokens |
+| /auth/logout | POST | No | Logout and blacklist refresh token |
 | /auth/me | GET | Yes | Retrieve the authenticated user's profile |
 
 ---
@@ -3385,7 +3387,7 @@ HTTP 429
 - JWT Refresh Tokens
 - Short-lived Access Tokens
 - Refresh Token Blacklisting
-- Optional Refresh Token Rotation (future enhancement)
+- Refresh Token Rotation (enabled)
 
 ---
 
