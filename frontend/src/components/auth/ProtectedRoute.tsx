@@ -1,12 +1,21 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
-import { tokenStorage } from '../../lib/token-storage';
+import { useAuth } from './AuthProvider';
+import { LoadingIndicator } from '../ui/LoadingIndicator';
 import { LogoutButton } from './LogoutButton';
 
 export function ProtectedRoute() {
   const location = useLocation();
-  const token = tokenStorage.getAccessToken();
+  const { isAuthenticated, isLoading } = useAuth();
 
-  if (!token) {
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <LoadingIndicator className="w-8 h-8 text-primary-600" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
 

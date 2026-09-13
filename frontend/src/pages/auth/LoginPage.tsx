@@ -11,10 +11,12 @@ import { LoginSchema } from "../../schemas/auth.schema";
 import type { LoginFormValues } from "../../schemas/auth.schema";
 import { authService } from "../../services/auth.service";
 import { tokenStorage } from "../../lib/token-storage";
+import { useAuth } from "../../components/auth/AuthProvider";
 
 export function LoginPage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { setAuthenticatedUser } = useAuth();
   const successMessage = location.state?.message;
 
   const [rootError, setRootError] = useState<string | null>(null);
@@ -31,8 +33,11 @@ export function LoginPage() {
     setRootError(null);
     try {
       const response = await authService.login(data);
-      // Success: store tokens
-      tokenStorage.setTokens(response.data.access_token, response.data.refresh_token);
+      // Success: store tokens and explicitly start a new session epoch
+      tokenStorage.setTokens(response.data.access_token, response.data.refresh_token, true);
+
+      // Tell context about the new user session
+      setAuthenticatedUser(response.data.user);
 
       // Redirect to the originally requested URL or dashboard
       const from = location.state?.from?.pathname || "/";

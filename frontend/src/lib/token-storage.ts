@@ -12,10 +12,12 @@ export const tokenStorage = {
     return sessionStorage.getItem(REFRESH_TOKEN_KEY);
   },
 
-  setTokens(accessToken: string, refreshToken: string): void {
+  setTokens(accessToken: string, refreshToken: string, isNewSession: boolean = false): void {
     sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
     sessionStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
-    sessionGeneration++;
+    if (isNewSession) {
+      sessionGeneration++;
+    }
   },
 
   clearTokens(): void {

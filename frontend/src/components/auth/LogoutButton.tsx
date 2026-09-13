@@ -1,32 +1,16 @@
-import { useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { tokenStorage } from "../../lib/token-storage";
-import { authService } from "../../services/auth.service";
+import { useAuth } from "./AuthProvider";
 import { LoadingIndicator } from "../ui/LoadingIndicator";
 
 export function LogoutButton() {
-  const navigate = useNavigate();
+  const { logout } = useAuth();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  const handleLogout = async () => {
+  const handleLogout = () => {
     setIsLoggingOut(true);
-    const refreshToken = tokenStorage.getRefreshToken();
-    
-    // Clear tokens synchronously to immediately increment session generation
-    // and prevent race conditions with in-flight refreshes
-    tokenStorage.clearTokens();
-
-    if (refreshToken) {
-      try {
-        await authService.logout(refreshToken);
-      } catch (error) {
-        // Log out locally even if the server request fails
-        console.warn("Server logout failed or token invalid.", error);
-      }
-    }
-    
-    navigate("/login", { replace: true });
+    logout();
   };
+
 
   return (
     <button
