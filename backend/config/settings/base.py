@@ -90,16 +90,31 @@ if not db_url_env:
 
 db_url = urllib.parse.urlparse(db_url_env)
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': db_url.path.lstrip('/'),
-        'USER': urllib.parse.unquote(db_url.username or ''),
-        'PASSWORD': urllib.parse.unquote(db_url.password or ''),
-        'HOST': db_url.hostname,
-        'PORT': db_url.port or 5432,
+if db_url.scheme == 'sqlite':
+    # SQLite: NAME is a file path, resolved relative to BASE_DIR
+    db_path = db_url.path.lstrip('/')
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / db_path if db_path else BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+elif db_url.scheme in ('postgres', 'postgresql'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': db_url.path.lstrip('/'),
+            'USER': urllib.parse.unquote(db_url.username or ''),
+            'PASSWORD': urllib.parse.unquote(db_url.password or ''),
+            'HOST': db_url.hostname,
+            'PORT': db_url.port or 5432,
+        }
+    }
+else:
+    raise ImproperlyConfigured(
+        f"Unsupported DATABASE_URL scheme: '{db_url.scheme}'. "
+        "Supported schemes: sqlite, postgres, postgresql."
+    )
 
 
 # Password validation
