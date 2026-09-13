@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { isAxiosError } from "axios";
@@ -180,9 +180,9 @@ export function RegisterPage() {
 
         <p className="text-center text-sm text-slate-600 mt-6">
           Already have an account?{" "}
-          <a href="/login" className="font-medium text-primary-600 hover:text-primary-500">
+          <Link to="/login" className="font-medium text-primary-600 hover:text-primary-500">
             Sign in
-          </a>
+          </Link>
         </p>
       </form>
     </FormContainer>

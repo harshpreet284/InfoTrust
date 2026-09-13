@@ -1,5 +1,5 @@
 import { apiClient } from '../lib/axios';
-import type { RegistrationFormValues } from '../schemas/auth.schema';
+import type { RegistrationFormValues, LoginFormValues } from '../schemas/auth.schema';
 
 export interface UserOut {
   id: string;
@@ -15,9 +15,25 @@ export interface RegistrationSuccessResponse {
   data: UserOut;
 }
 
+export interface LoginDataOut {
+  access_token: string;
+  refresh_token: string;
+  user: UserOut;
+}
+
+export interface LoginSuccessResponse {
+  success: boolean;
+  message: string;
+  data: LoginDataOut;
+}
+
 export const authService = {
   async register(payload: RegistrationFormValues): Promise<RegistrationSuccessResponse> {
     const response = await apiClient.post<RegistrationSuccessResponse>('/auth/register', payload);
+    return response.data;
+  },
+  async login(payload: LoginFormValues): Promise<LoginSuccessResponse> {
+    const response = await apiClient.post<LoginSuccessResponse>('/auth/login', payload);
     return response.data;
   },
 };
