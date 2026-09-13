@@ -3,6 +3,7 @@ import { AuthLayout } from './components/auth/AuthLayout';
 import { LoginPage } from './pages/auth/LoginPage';
 import { RegisterPage } from './pages/auth/RegisterPage';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
+import { RoleGuard } from './components/auth/RoleGuard';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { SubmitClaimPage } from './pages/claims/SubmitClaimPage';
 import { HistoryPage } from './pages/history/HistoryPage';
@@ -25,7 +26,10 @@ function App() {
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/admin" element={<AdminAreaPage />} />
+
+          <Route element={<RoleGuard allowedRoles={['ADMIN']} />}>
+            <Route path="/admin" element={<AdminAreaPage />} />
+          </Route>
         </Route>
 
         {/* Fallback route - redirect to dashboard */}
