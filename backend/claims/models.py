@@ -26,3 +26,26 @@ class Claim(models.Model):
 
     def __str__(self):
         return f"{self.id} - {self.status}"
+
+class FeedbackType(models.TextChoices):
+    HELPFUL = 'HELPFUL', 'Helpful'
+    NOT_HELPFUL = 'NOT_HELPFUL', 'Not Helpful'
+
+class ClaimFeedback(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='claim_feedback'
+    )
+    claim = models.ForeignKey(
+        Claim,
+        on_delete=models.CASCADE,
+        related_name='feedback'
+    )
+    feedback_type = models.CharField(
+        max_length=20,
+        choices=FeedbackType.choices
+    )
+
+    def __str__(self):
+        return f"Feedback by {self.user_id} on Claim {self.claim_id}: {self.feedback_type}"

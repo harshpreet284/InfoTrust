@@ -45,3 +45,33 @@ class ClaimModelTests(TestCase):
         # Verify User can access their related claims (one-to-many)
         self.assertEqual(self.user.claims.count(), 1)
         self.assertEqual(self.user.claims.first().id, claim.id)
+
+from claims.models import ClaimFeedback, FeedbackType
+
+class ClaimFeedbackModelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='feedbacktest@example.com',
+            password='Password123!',
+            full_name='Feedback Tester'
+        )
+        self.claim = Claim.objects.create(
+            user=self.user,
+            text='Test claim for feedback'
+        )
+        
+    def test_feedback_creation(self):
+        feedback = ClaimFeedback.objects.create(
+            user=self.user,
+            claim=self.claim,
+            feedback_type=FeedbackType.HELPFUL
+        )
+        
+        # Verify fields
+        self.assertEqual(feedback.user, self.user)
+        self.assertEqual(feedback.claim, self.claim)
+        self.assertEqual(feedback.feedback_type, FeedbackType.HELPFUL)
+        
+        # Verify reverse relationships
+        self.assertEqual(self.user.claim_feedback.count(), 1)
+        self.assertEqual(self.claim.feedback.count(), 1)
