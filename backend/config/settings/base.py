@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'ninja_jwt',
     'ninja_jwt.token_blacklist',
     'claims',
+    'analysis',
 ]
 
 MIDDLEWARE = [
