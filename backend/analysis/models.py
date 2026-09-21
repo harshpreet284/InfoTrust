@@ -41,5 +41,21 @@ class Analysis(models.Model):
 
     analysis_timestamp = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(credibility_score__gte=0) & models.Q(credibility_score__lte=100),
+                name='valid_credibility_score_range'
+            ),
+            models.CheckConstraint(
+                check=models.Q(final_weighted_score__gte=0) & models.Q(final_weighted_score__lte=100),
+                name='valid_final_weighted_score_range'
+            ),
+            models.CheckConstraint(
+                check=models.Q(verdict__in=Verdict.values),
+                name='valid_verdict_values'
+            )
+        ]
+
     def __str__(self):
         return f"Analysis for Claim {self.claim_id}"

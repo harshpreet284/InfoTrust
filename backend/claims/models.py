@@ -47,5 +47,13 @@ class ClaimFeedback(models.Model):
         choices=FeedbackType.choices
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'claim'],
+                name='unique_user_claim_feedback'
+            )
+        ]
+
     def __str__(self):
         return f"Feedback by {self.user_id} on Claim {self.claim_id}: {self.feedback_type}"
