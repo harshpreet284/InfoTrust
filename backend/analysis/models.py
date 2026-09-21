@@ -31,6 +31,14 @@ class Analysis(models.Model):
     model_prediction = models.CharField(max_length=20, choices=ModelPrediction.choices, null=True, blank=True)
     model_confidence = models.FloatField(null=True, blank=True)
     
+    # Hybrid Credibility Engine Fields
+    fact_check_summary = models.TextField(null=True, blank=True)
+    fact_check_match_count = models.IntegerField(null=True, blank=True)
+    narrative_match_count = models.IntegerField(null=True, blank=True)
+    highest_similarity_score = models.FloatField(null=True, blank=True)
+    rule_based_flags = models.JSONField(default=dict, blank=True)
+    final_weighted_score = models.FloatField(null=True, blank=True)
+
     analysis_timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

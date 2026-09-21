@@ -49,3 +49,23 @@ class AnalysisModelTests(TestCase):
         
         with self.assertRaises(IntegrityError):
             Analysis.objects.create(claim=self.claim)
+
+    def test_analysis_db006_fields(self):
+        """Test DB-006 Hybrid Credibility Engine fields"""
+        analysis = Analysis.objects.create(
+            claim=self.claim,
+            fact_check_summary="Matched 2 sources",
+            fact_check_match_count=2,
+            narrative_match_count=1,
+            highest_similarity_score=0.85,
+            rule_based_flags={"has_capital_words": True},
+            final_weighted_score=75.0
+        )
+        
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.fact_check_summary, "Matched 2 sources")
+        self.assertEqual(analysis.fact_check_match_count, 2)
+        self.assertEqual(analysis.narrative_match_count, 1)
+        self.assertEqual(analysis.highest_similarity_score, 0.85)
+        self.assertEqual(analysis.rule_based_flags, {"has_capital_words": True})
+        self.assertEqual(analysis.final_weighted_score, 75.0)
