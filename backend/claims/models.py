@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinLengthValidator, MaxLengthValidator
 
 class ClaimStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
@@ -15,7 +16,9 @@ class Claim(models.Model):
         on_delete=models.CASCADE,
         related_name='claims'
     )
-    text = models.TextField()
+    text = models.TextField(
+        validators=[MinLengthValidator(10), MaxLengthValidator(2000)]
+    )
     status = models.CharField(
         max_length=20,
         choices=ClaimStatus.choices,

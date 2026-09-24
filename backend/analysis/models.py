@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from claims.models import Claim
 
 class Verdict(models.TextChoices):
@@ -21,7 +22,10 @@ class Analysis(models.Model):
     )
     
     # Nullable because analysis might fail or be created before processing is fully complete.
-    credibility_score = models.FloatField(null=True, blank=True)
+    credibility_score = models.FloatField(
+        null=True, blank=True,
+        validators=[MinValueValidator(0.0), MaxValueValidator(100.0)]
+    )
     verdict = models.CharField(max_length=20, choices=Verdict.choices, null=True, blank=True)
     
     # Store explainability details as JSON
@@ -37,7 +41,10 @@ class Analysis(models.Model):
     narrative_match_count = models.IntegerField(null=True, blank=True)
     highest_similarity_score = models.FloatField(null=True, blank=True)
     rule_based_flags = models.JSONField(default=dict, blank=True)
-    final_weighted_score = models.FloatField(null=True, blank=True)
+    final_weighted_score = models.FloatField(
+        null=True, blank=True,
+        validators=[MinValueValidator(0.0), MaxValueValidator(100.0)]
+    )
 
     analysis_timestamp = models.DateTimeField(auto_now_add=True)
 
