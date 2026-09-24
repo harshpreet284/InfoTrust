@@ -56,6 +56,10 @@ class Analysis(models.Model):
                 name='valid_verdict_values'
             )
         ]
+        indexes = [
+            models.Index(fields=['verdict'], name='analysis_verdict_idx'),
+            models.Index(fields=['credibility_score'], name='analysis_cred_score_idx'),
+        ]
 
     def __str__(self):
         return f"Analysis for Claim {self.claim_id}"

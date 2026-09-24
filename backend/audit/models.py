@@ -19,6 +19,9 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['timestamp'], name='audit_timestamp_idx'),
+        ]
 
     def __str__(self):
         return f"{self.action} by {self.user_id} on {self.target} at {self.timestamp}"

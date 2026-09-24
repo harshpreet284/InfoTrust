@@ -24,6 +24,11 @@ class Claim(models.Model):
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['submitted_at'], name='claim_submitted_at_idx'),
+        ]
+
     def __str__(self):
         return f"{self.id} - {self.status}"
 
