@@ -15,10 +15,14 @@ from pathlib import Path
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
 import urllib.parse
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # We added another .parent because we moved settings inside a settings/ module
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
