@@ -1,17 +1,17 @@
-import { useState } from "react";
-import { useLocation, Link, useNavigate } from "react-router-dom";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { isAxiosError } from "axios";
+import { useState } from 'react';
+import { useLocation, Link, useNavigate } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { isAxiosError } from 'axios';
 
-import { FormContainer } from "../../components/ui/FormContainer";
-import { ValidationMessage } from "../../components/ui/ValidationMessage";
-import { LoadingIndicator } from "../../components/ui/LoadingIndicator";
-import { LoginSchema } from "../../schemas/auth.schema";
-import type { LoginFormValues } from "../../schemas/auth.schema";
-import { authService } from "../../services/auth.service";
-import { tokenStorage } from "../../lib/token-storage";
-import { useAuth } from "../../components/auth/AuthProvider";
+import { FormContainer } from '../../components/ui/FormContainer';
+import { ValidationMessage } from '../../components/ui/ValidationMessage';
+import { LoadingIndicator } from '../../components/ui/LoadingIndicator';
+import { LoginSchema } from '../../schemas/auth.schema';
+import type { LoginFormValues } from '../../schemas/auth.schema';
+import { authService } from '../../services/auth.service';
+import { tokenStorage } from '../../lib/token-storage';
+import { useAuth } from '../../components/auth/AuthProvider';
 
 export function LoginPage() {
   const location = useLocation();
@@ -24,9 +24,9 @@ export function LoginPage() {
     register,
     handleSubmit,
     setError,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting }
   } = useForm<LoginFormValues>({
-    resolver: zodResolver(LoginSchema),
+    resolver: zodResolver(LoginSchema)
   });
 
   const onSubmit = async (data: LoginFormValues) => {
@@ -40,7 +40,7 @@ export function LoginPage() {
       setAuthenticatedUser(response.data.user);
 
       // Redirect to the originally requested URL or dashboard
-      const from = location.state?.from?.pathname || "/";
+      const from = location.state?.from?.pathname || '/';
       navigate(from, { replace: true });
     } catch (error) {
       if (isAxiosError(error)) {
@@ -55,15 +55,15 @@ export function LoginPage() {
 
           // 422 Validation Error - Django Ninja native format
           if (status === 422 && Array.isArray(errorData?.detail)) {
-            errorData.detail.forEach((err: any) => {
+            errorData.detail.forEach((err: { loc?: string[]; msg?: string }) => {
               const field = err.loc?.[err.loc.length - 1];
-              if (field && ["email", "password"].includes(field)) {
+              if (field && ['email', 'password'].includes(field)) {
                 setError(field as keyof LoginFormValues, {
-                  type: "server",
+                  type: 'server',
                   message: err.msg
                 });
               } else {
-                setRootError(err.msg || "A validation error occurred.");
+                setRootError(err.msg || 'A validation error occurred.');
               }
             });
             return;
@@ -71,29 +71,28 @@ export function LoginPage() {
 
           // 5xx Server Errors (mask internal details)
           if (status >= 500) {
-            setRootError("A server error occurred. Please try again later.");
+            setRootError('A server error occurred. Please try again later.');
             return;
           }
         } else if (error.code === 'ECONNABORTED') {
           // Timeout
-          setRootError("The request timed out. Please check your connection and try again.");
+          setRootError('The request timed out. Please check your connection and try again.');
           return;
         } else if (error.request) {
           // Network error (no response received)
-          setRootError("Network error. Please check your connection and try again.");
+          setRootError('Network error. Please check your connection and try again.');
           return;
         }
       }
 
       // Safe fallback for entirely unknown errors
-      setRootError("An unexpected error occurred. Please try again.");
+      setRootError('An unexpected error occurred. Please try again.');
     }
   };
 
-
   return (
-    <FormContainer 
-      title="Welcome back" 
+    <FormContainer
+      title="Welcome back"
       description="Enter your credentials to access your account."
     >
       {successMessage && !rootError && (
@@ -120,15 +119,15 @@ export function LoginPage() {
             autoComplete="email"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.email
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("email")}
+            {...register('email')}
           />
           <ValidationMessage message={errors.email?.message} />
         </div>
-        
+
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="password">
             Password
@@ -140,11 +139,11 @@ export function LoginPage() {
             autoComplete="current-password"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.password
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("password")}
+            {...register('password')}
           />
           <ValidationMessage message={errors.password?.message} />
         </div>
@@ -160,12 +159,12 @@ export function LoginPage() {
               Signing in...
             </>
           ) : (
-            "Sign in"
+            'Sign in'
           )}
         </button>
 
         <p className="text-center text-sm text-slate-600 mt-6">
-          Don't have an account?{" "}
+          Don't have an account?{' '}
           <Link to="/register" className="font-medium text-primary-600 hover:text-primary-500">
             Register now
           </Link>

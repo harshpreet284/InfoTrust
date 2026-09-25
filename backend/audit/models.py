@@ -1,7 +1,8 @@
-from django.db import models
+import uuid
 
 from django.conf import settings
-import uuid
+from django.db import models
+
 
 class AuditLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -10,7 +11,7 @@ class AuditLog(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='audit_logs'
+        related_name="audit_logs",
     )
     action = models.CharField(max_length=255)
     target = models.CharField(max_length=255, null=True, blank=True)
@@ -18,9 +19,9 @@ class AuditLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-timestamp']
+        ordering = ["-timestamp"]
         indexes = [
-            models.Index(fields=['timestamp'], name='audit_timestamp_idx'),
+            models.Index(fields=["timestamp"], name="audit_timestamp_idx"),
         ]
 
     def __str__(self):

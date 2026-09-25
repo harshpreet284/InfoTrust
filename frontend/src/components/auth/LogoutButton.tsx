@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { useAuth } from "./AuthProvider";
-import { LoadingIndicator } from "../ui/LoadingIndicator";
+import { useState } from 'react';
+import { useAuth } from './AuthProvider';
+import { LoadingIndicator } from '../ui/LoadingIndicator';
 
 export function LogoutButton() {
   const { logout } = useAuth();
@@ -10,7 +10,6 @@ export function LogoutButton() {
     setIsLoggingOut(true);
     logout();
   };
-
 
   return (
     <button
@@ -24,7 +23,7 @@ export function LogoutButton() {
           Signing out...
         </>
       ) : (
-        "Sign out"
+        'Sign out'
       )}
     </button>
   );

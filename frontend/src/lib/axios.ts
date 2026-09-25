@@ -8,8 +8,8 @@ const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/
 export const apiClient = axios.create({
   baseURL,
   headers: {
-    'Content-Type': 'application/json',
-  },
+    'Content-Type': 'application/json'
+  }
 });
 
 // Request Interceptor
@@ -23,10 +23,10 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 
 // Concurrency state
 let isRefreshing = false;
-let failedQueue: Array<{ resolve: (token: string) => void; reject: (err: any) => void }> = [];
+let failedQueue: Array<{ resolve: (token: string) => void; reject: (err: unknown) => void }> = [];
 
-const processQueue = (error: any, token: string | null = null) => {
-  failedQueue.forEach(prom => {
+const processQueue = (error: unknown, token: string | null = null) => {
+  failedQueue.forEach((prom) => {
     if (error) {
       prom.reject(error);
     } else {

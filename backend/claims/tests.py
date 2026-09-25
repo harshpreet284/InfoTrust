@@ -1,77 +1,75 @@
-from django.test import TestCase
 from django.contrib.auth import get_user_model
+from django.test import TestCase
+
 from claims.models import Claim, ClaimStatus
 
 User = get_user_model()
 
+
 class ClaimModelTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
-            email='claimtest@example.com',
-            password='Password123!',
-            full_name='Claim Tester'
+            email="claimtest@example.com",
+            password="Password123!",
+            full_name="Claim Tester",
         )
 
     def test_claim_creation(self):
         """Test that a Claim can be instantiated with a real User and saved successfully"""
-        claim = Claim.objects.create(
-            user=self.user,
-            text='This is a test claim.'
-        )
-        
+        claim = Claim.objects.create(user=self.user, text="This is a test claim.")
+
         # Verify UUID primary key exists and is automatically generated
         self.assertIsNotNone(claim.id)
-        self.assertEqual(len(str(claim.id)), 36) # UUID string length
-        
+        self.assertEqual(len(str(claim.id)), 36)  # UUID string length
+
         # Verify User ForeignKey exists and relationship is correct
         self.assertEqual(claim.user, self.user)
-        
+
         # Verify claim text field exists
-        self.assertEqual(claim.text, 'This is a test claim.')
-        
+        self.assertEqual(claim.text, "This is a test claim.")
+
         # Verify status field exists (default PENDING)
         self.assertEqual(claim.status, ClaimStatus.PENDING)
-        
+
         # Verify submitted_at exists
         self.assertIsNotNone(claim.submitted_at)
-        
+
         # Verify updated_at exists
         self.assertIsNotNone(claim.updated_at)
-        
+
         # Verify Claim can be retrieved
         retrieved_claim = Claim.objects.get(id=claim.id)
         self.assertEqual(retrieved_claim.id, claim.id)
-        
+
         # Verify User can access their related claims (one-to-many)
         self.assertEqual(self.user.claims.count(), 1)
         self.assertEqual(self.user.claims.first().id, claim.id)
 
+
 from claims.models import ClaimFeedback, FeedbackType
+
 
 class ClaimFeedbackModelTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
-            email='feedbacktest@example.com',
-            password='Password123!',
-            full_name='Feedback Tester'
+            email="feedbacktest@example.com",
+            password="Password123!",
+            full_name="Feedback Tester",
         )
         self.claim = Claim.objects.create(
-            user=self.user,
-            text='Test claim for feedback'
+            user=self.user, text="Test claim for feedback"
         )
-        
+
     def test_feedback_creation(self):
         feedback = ClaimFeedback.objects.create(
-            user=self.user,
-            claim=self.claim,
-            feedback_type=FeedbackType.HELPFUL
+            user=self.user, claim=self.claim, feedback_type=FeedbackType.HELPFUL
         )
-        
+
         # Verify fields
         self.assertEqual(feedback.user, self.user)
         self.assertEqual(feedback.claim, self.claim)
         self.assertEqual(feedback.feedback_type, FeedbackType.HELPFUL)
-        
+
         # Verify reverse relationships
         self.assertEqual(self.user.claim_feedback.count(), 1)
         self.assertEqual(self.claim.feedback.count(), 1)

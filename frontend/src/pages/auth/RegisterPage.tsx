@@ -1,15 +1,15 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { isAxiosError } from "axios";
+import { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { isAxiosError } from 'axios';
 
-import { FormContainer } from "../../components/ui/FormContainer";
-import { ValidationMessage } from "../../components/ui/ValidationMessage";
-import { LoadingIndicator } from "../../components/ui/LoadingIndicator";
-import { RegistrationSchema } from "../../schemas/auth.schema";
-import type { RegistrationFormValues } from "../../schemas/auth.schema";
-import { authService } from "../../services/auth.service";
+import { FormContainer } from '../../components/ui/FormContainer';
+import { ValidationMessage } from '../../components/ui/ValidationMessage';
+import { LoadingIndicator } from '../../components/ui/LoadingIndicator';
+import { RegistrationSchema } from '../../schemas/auth.schema';
+import type { RegistrationFormValues } from '../../schemas/auth.schema';
+import { authService } from '../../services/auth.service';
 
 export function RegisterPage() {
   const navigate = useNavigate();
@@ -19,9 +19,9 @@ export function RegisterPage() {
     register,
     handleSubmit,
     setError,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting }
   } = useForm<RegistrationFormValues>({
-    resolver: zodResolver(RegistrationSchema),
+    resolver: zodResolver(RegistrationSchema)
   });
 
   const onSubmit = async (data: RegistrationFormValues) => {
@@ -29,8 +29,8 @@ export function RegisterPage() {
     try {
       await authService.register(data);
       // Success: Navigate to login with success state
-      navigate("/login", {
-        state: { message: "Registration successful. Please log in." },
+      navigate('/login', {
+        state: { message: 'Registration successful. Please log in.' }
       });
     } catch (error) {
       if (isAxiosError(error)) {
@@ -41,7 +41,7 @@ export function RegisterPage() {
           if (status === 409 && errorData?.errors) {
             Object.entries(errorData.errors).forEach(([field, messages]) => {
               setError(field as keyof RegistrationFormValues, {
-                type: "server",
+                type: 'server',
                 message: (messages as string[])[0]
               });
             });
@@ -50,16 +50,16 @@ export function RegisterPage() {
 
           // 422 Validation Error - Django Ninja native format
           if (status === 422 && Array.isArray(errorData?.detail)) {
-            errorData.detail.forEach((err: any) => {
+            errorData.detail.forEach((err: { loc?: string[]; msg?: string }) => {
               const field = err.loc?.[err.loc.length - 1];
-              if (field && ["full_name", "email", "password", "confirm_password"].includes(field)) {
+              if (field && ['full_name', 'email', 'password', 'confirm_password'].includes(field)) {
                 setError(field as keyof RegistrationFormValues, {
-                  type: "server",
+                  type: 'server',
                   message: err.msg
                 });
               } else {
                 // Unmappable validation error
-                setRootError(err.msg || "A validation error occurred.");
+                setRootError(err.msg || 'A validation error occurred.');
               }
             });
             return;
@@ -67,22 +67,22 @@ export function RegisterPage() {
 
           // 5xx Server Errors (mask internal details)
           if (status >= 500) {
-            setRootError("A server error occurred. Please try again later.");
+            setRootError('A server error occurred. Please try again later.');
             return;
           }
         } else if (error.code === 'ECONNABORTED') {
           // Timeout
-          setRootError("The request timed out. Please check your connection and try again.");
+          setRootError('The request timed out. Please check your connection and try again.');
           return;
         } else if (error.request) {
           // Network error (no response received)
-          setRootError("Network error. Please check your connection and try again.");
+          setRootError('Network error. Please check your connection and try again.');
           return;
         }
       }
 
       // Safe fallback for entirely unknown errors
-      setRootError("An unexpected error occurred. Please try again.");
+      setRootError('An unexpected error occurred. Please try again.');
     }
   };
 
@@ -92,7 +92,6 @@ export function RegisterPage() {
       description="Join InfoTrust to start analyzing claims."
     >
       <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
-
         {rootError && (
           <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm font-medium mb-4">
             {rootError}
@@ -110,11 +109,11 @@ export function RegisterPage() {
             autoComplete="name"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.full_name
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("full_name")}
+            {...register('full_name')}
           />
           <ValidationMessage message={errors.full_name?.message} />
         </div>
@@ -130,11 +129,11 @@ export function RegisterPage() {
             autoComplete="email"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.email
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("email")}
+            {...register('email')}
           />
           <ValidationMessage message={errors.email?.message} />
         </div>
@@ -150,17 +149,20 @@ export function RegisterPage() {
             autoComplete="new-password"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.password
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("password")}
+            {...register('password')}
           />
           <ValidationMessage message={errors.password?.message} />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1" htmlFor="confirm_password">
+          <label
+            className="block text-sm font-medium text-slate-700 mb-1"
+            htmlFor="confirm_password"
+          >
             Confirm Password
           </label>
           <input
@@ -170,11 +172,11 @@ export function RegisterPage() {
             autoComplete="new-password"
             className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:outline-none transition-shadow ${
               errors.confirm_password
-                ? "border-red-300 focus:ring-red-500 focus:border-red-500"
-                : "border-slate-300 focus:ring-primary-500 focus:border-primary-500"
+                ? 'border-red-300 focus:ring-red-500 focus:border-red-500'
+                : 'border-slate-300 focus:ring-primary-500 focus:border-primary-500'
             }`}
             disabled={isSubmitting}
-            {...register("confirm_password")}
+            {...register('confirm_password')}
           />
           <ValidationMessage message={errors.confirm_password?.message} />
         </div>
@@ -190,12 +192,12 @@ export function RegisterPage() {
               Creating account...
             </>
           ) : (
-            "Create account"
+            'Create account'
           )}
         </button>
 
         <p className="text-center text-sm text-slate-600 mt-6">
-          Already have an account?{" "}
+          Already have an account?{' '}
           <Link to="/login" className="font-medium text-primary-600 hover:text-primary-500">
             Sign in
           </Link>

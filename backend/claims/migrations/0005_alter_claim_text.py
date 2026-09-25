@@ -7,13 +7,18 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('claims', '0004_claim_claim_submitted_at_idx'),
+        ("claims", "0004_claim_claim_submitted_at_idx"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='claim',
-            name='text',
-            field=models.TextField(validators=[django.core.validators.MinLengthValidator(10), django.core.validators.MaxLengthValidator(2000)]),
+            model_name="claim",
+            name="text",
+            field=models.TextField(
+                validators=[
+                    django.core.validators.MinLengthValidator(10),
+                    django.core.validators.MaxLengthValidator(2000),
+                ]
+            ),
         ),
     ]

@@ -7,13 +7,15 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('claims', '0002_claimfeedback'),
+        ("claims", "0002_claimfeedback"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddConstraint(
-            model_name='claimfeedback',
-            constraint=models.UniqueConstraint(fields=('user', 'claim'), name='unique_user_claim_feedback'),
+            model_name="claimfeedback",
+            constraint=models.UniqueConstraint(
+                fields=("user", "claim"), name="unique_user_claim_feedback"
+            ),
         ),
     ]

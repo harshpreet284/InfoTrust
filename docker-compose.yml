@@ -19,11 +19,10 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    env_file:
+      - ./backend/.env
     environment:
       - DATABASE_URL=postgres://user:password@postgres:5432/infotrust
-      - DEBUG=True
-      - CORS_ALLOWED_ORIGINS=http://localhost:5173
-      - SECRET_KEY=test_secret_docker_dev_only
     depends_on:
       - postgres
 

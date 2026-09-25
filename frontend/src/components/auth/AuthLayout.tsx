@@ -1,5 +1,5 @@
-import { Outlet } from "react-router-dom";
-import { Logo } from "../ui/Logo";
+import { Outlet } from 'react-router-dom';
+import { Logo } from '../ui/Logo';
 
 export function AuthLayout() {
   return (
@@ -14,7 +14,8 @@ export function AuthLayout() {
             Hybrid Credibility Assessment
           </h1>
           <p className="text-slate-300 text-lg leading-relaxed">
-            InfoTrust leverages advanced AI analysis, rule-based heuristics, and narrative tracking to accurately detect misinformation and establish trust.
+            InfoTrust leverages advanced AI analysis, rule-based heuristics, and narrative tracking
+            to accurately detect misinformation and establish trust.
           </p>
         </div>
         <div className="text-sm text-slate-400">
@@ -28,7 +29,7 @@ export function AuthLayout() {
         <div className="lg:hidden mb-8 flex justify-center">
           <Logo />
         </div>
-        
+
         <Outlet />
       </div>
     </div>

@@ -7,18 +7,32 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('analysis', '0004_analysis_analysis_verdict_idx_and_more'),
+        ("analysis", "0004_analysis_analysis_verdict_idx_and_more"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='analysis',
-            name='credibility_score',
-            field=models.FloatField(blank=True, null=True, validators=[django.core.validators.MinValueValidator(0.0), django.core.validators.MaxValueValidator(100.0)]),
+            model_name="analysis",
+            name="credibility_score",
+            field=models.FloatField(
+                blank=True,
+                null=True,
+                validators=[
+                    django.core.validators.MinValueValidator(0.0),
+                    django.core.validators.MaxValueValidator(100.0),
+                ],
+            ),
         ),
         migrations.AlterField(
-            model_name='analysis',
-            name='final_weighted_score',
-            field=models.FloatField(blank=True, null=True, validators=[django.core.validators.MinValueValidator(0.0), django.core.validators.MaxValueValidator(100.0)]),
+            model_name="analysis",
+            name="final_weighted_score",
+            field=models.FloatField(
+                blank=True,
+                null=True,
+                validators=[
+                    django.core.validators.MinValueValidator(0.0),
+                    django.core.validators.MaxValueValidator(100.0),
+                ],
+            ),
         ),
     ]

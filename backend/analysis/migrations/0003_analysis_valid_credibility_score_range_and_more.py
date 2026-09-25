@@ -6,21 +6,36 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('analysis', '0002_analysis_fact_check_match_count_and_more'),
-        ('claims', '0003_claimfeedback_unique_user_claim_feedback'),
+        ("analysis", "0002_analysis_fact_check_match_count_and_more"),
+        ("claims", "0003_claimfeedback_unique_user_claim_feedback"),
     ]
 
     operations = [
         migrations.AddConstraint(
-            model_name='analysis',
-            constraint=models.CheckConstraint(condition=models.Q(('credibility_score__gte', 0), ('credibility_score__lte', 100)), name='valid_credibility_score_range'),
+            model_name="analysis",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("credibility_score__gte", 0), ("credibility_score__lte", 100)
+                ),
+                name="valid_credibility_score_range",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='analysis',
-            constraint=models.CheckConstraint(condition=models.Q(('final_weighted_score__gte', 0), ('final_weighted_score__lte', 100)), name='valid_final_weighted_score_range'),
+            model_name="analysis",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("final_weighted_score__gte", 0), ("final_weighted_score__lte", 100)
+                ),
+                name="valid_final_weighted_score_range",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='analysis',
-            constraint=models.CheckConstraint(condition=models.Q(('verdict__in', ['CREDIBLE', 'UNCERTAIN', 'MISINFORMATION'])), name='valid_verdict_values'),
+            model_name="analysis",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("verdict__in", ["CREDIBLE", "UNCERTAIN", "MISINFORMATION"])
+                ),
+                name="valid_verdict_values",
+            ),
         ),
     ]

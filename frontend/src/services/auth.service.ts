@@ -63,17 +63,21 @@ export const authService = {
   },
 
   async logout(refreshToken: string): Promise<LogoutSuccessResponse> {
-    const response = await apiClient.post<LogoutSuccessResponse>('/auth/logout', { refresh_token: refreshToken });
+    const response = await apiClient.post<LogoutSuccessResponse>('/auth/logout', {
+      refresh_token: refreshToken
+    });
     return response.data;
   },
 
   async refreshToken(refreshToken: string): Promise<RefreshSuccessResponse> {
-    const response = await apiClient.post<RefreshSuccessResponse>('/auth/refresh', { refresh_token: refreshToken });
+    const response = await apiClient.post<RefreshSuccessResponse>('/auth/refresh', {
+      refresh_token: refreshToken
+    });
     return response.data;
   },
 
   async getCurrentUser(): Promise<CurrentUserSuccessResponse> {
     const response = await apiClient.get<CurrentUserSuccessResponse>('/auth/me');
     return response.data;
-  },
+  }
 };

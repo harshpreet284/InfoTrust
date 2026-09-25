@@ -6,17 +6,19 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('analysis', '0003_analysis_valid_credibility_score_range_and_more'),
-        ('claims', '0004_claim_claim_submitted_at_idx'),
+        ("analysis", "0003_analysis_valid_credibility_score_range_and_more"),
+        ("claims", "0004_claim_claim_submitted_at_idx"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='analysis',
-            index=models.Index(fields=['verdict'], name='analysis_verdict_idx'),
+            model_name="analysis",
+            index=models.Index(fields=["verdict"], name="analysis_verdict_idx"),
         ),
         migrations.AddIndex(
-            model_name='analysis',
-            index=models.Index(fields=['credibility_score'], name='analysis_cred_score_idx'),
+            model_name="analysis",
+            index=models.Index(
+                fields=["credibility_score"], name="analysis_cred_score_idx"
+            ),
         ),
     ]

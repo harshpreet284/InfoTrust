@@ -7,13 +7,13 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('audit', '0001_initial'),
+        ("audit", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='auditlog',
-            index=models.Index(fields=['timestamp'], name='audit_timestamp_idx'),
+            model_name="auditlog",
+            index=models.Index(fields=["timestamp"], name="audit_timestamp_idx"),
         ),
     ]

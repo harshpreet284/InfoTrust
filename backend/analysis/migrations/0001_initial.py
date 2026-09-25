@@ -9,20 +9,52 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('claims', '0001_initial'),
+        ("claims", "0001_initial"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='Analysis',
+            name="Analysis",
             fields=[
-                ('claim', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, primary_key=True, related_name='analysis', serialize=False, to='claims.claim')),
-                ('credibility_score', models.FloatField(blank=True, null=True)),
-                ('verdict', models.CharField(blank=True, choices=[('CREDIBLE', 'Credible'), ('UNCERTAIN', 'Uncertain'), ('MISINFORMATION', 'Misinformation')], max_length=20, null=True)),
-                ('explainability_json', models.JSONField(blank=True, default=dict)),
-                ('model_prediction', models.CharField(blank=True, choices=[('CREDIBLE', 'Credible'), ('MISINFORMATION', 'Misinformation')], max_length=20, null=True)),
-                ('model_confidence', models.FloatField(blank=True, null=True)),
-                ('analysis_timestamp', models.DateTimeField(auto_now_add=True)),
+                (
+                    "claim",
+                    models.OneToOneField(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        primary_key=True,
+                        related_name="analysis",
+                        serialize=False,
+                        to="claims.claim",
+                    ),
+                ),
+                ("credibility_score", models.FloatField(blank=True, null=True)),
+                (
+                    "verdict",
+                    models.CharField(
+                        blank=True,
+                        choices=[
+                            ("CREDIBLE", "Credible"),
+                            ("UNCERTAIN", "Uncertain"),
+                            ("MISINFORMATION", "Misinformation"),
+                        ],
+                        max_length=20,
+                        null=True,
+                    ),
+                ),
+                ("explainability_json", models.JSONField(blank=True, default=dict)),
+                (
+                    "model_prediction",
+                    models.CharField(
+                        blank=True,
+                        choices=[
+                            ("CREDIBLE", "Credible"),
+                            ("MISINFORMATION", "Misinformation"),
+                        ],
+                        max_length=20,
+                        null=True,
+                    ),
+                ),
+                ("model_confidence", models.FloatField(blank=True, null=True)),
+                ("analysis_timestamp", models.DateTimeField(auto_now_add=True)),
             ],
         ),
     ]

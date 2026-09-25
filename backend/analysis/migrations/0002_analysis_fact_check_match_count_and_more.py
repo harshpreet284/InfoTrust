@@ -6,38 +6,38 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('analysis', '0001_initial'),
+        ("analysis", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='analysis',
-            name='fact_check_match_count',
+            model_name="analysis",
+            name="fact_check_match_count",
             field=models.IntegerField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='analysis',
-            name='fact_check_summary',
+            model_name="analysis",
+            name="fact_check_summary",
             field=models.TextField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='analysis',
-            name='final_weighted_score',
+            model_name="analysis",
+            name="final_weighted_score",
             field=models.FloatField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='analysis',
-            name='highest_similarity_score',
+            model_name="analysis",
+            name="highest_similarity_score",
             field=models.FloatField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='analysis',
-            name='narrative_match_count',
+            model_name="analysis",
+            name="narrative_match_count",
             field=models.IntegerField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='analysis',
-            name='rule_based_flags',
+            model_name="analysis",
+            name="rule_based_flags",
             field=models.JSONField(blank=True, default=dict),
         ),
     ]

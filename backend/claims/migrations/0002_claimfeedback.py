@@ -8,18 +8,49 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('claims', '0001_initial'),
+        ("claims", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ClaimFeedback',
+            name="ClaimFeedback",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('feedback_type', models.CharField(choices=[('HELPFUL', 'Helpful'), ('NOT_HELPFUL', 'Not Helpful')], max_length=20)),
-                ('claim', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='feedback', to='claims.claim')),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='claim_feedback', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "feedback_type",
+                    models.CharField(
+                        choices=[
+                            ("HELPFUL", "Helpful"),
+                            ("NOT_HELPFUL", "Not Helpful"),
+                        ],
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "claim",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="feedback",
+                        to="claims.claim",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="claim_feedback",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
     ]

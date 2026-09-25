@@ -7,13 +7,13 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('claims', '0003_claimfeedback_unique_user_claim_feedback'),
+        ("claims", "0003_claimfeedback_unique_user_claim_feedback"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='claim',
-            index=models.Index(fields=['submitted_at'], name='claim_submitted_at_idx'),
+            model_name="claim",
+            index=models.Index(fields=["submitted_at"], name="claim_submitted_at_idx"),
         ),
     ]
