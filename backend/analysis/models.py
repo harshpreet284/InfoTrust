@@ -68,7 +68,12 @@ class Analysis(models.Model):
                 name="valid_final_weighted_score_range",
             ),
             models.CheckConstraint(
-                check=models.Q(verdict__in=Verdict.values), name="valid_verdict_values"
+                check=models.Q(verdict__in=Verdict.values) | models.Q(verdict__isnull=True),
+                name="valid_verdict_values"
+            ),
+            models.CheckConstraint(
+                check=(models.Q(model_confidence__gte=0.0) & models.Q(model_confidence__lte=1.0)) | models.Q(model_confidence__isnull=True),
+                name="valid_model_confidence_range",
             ),
         ]
         indexes = [

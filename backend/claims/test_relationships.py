@@ -20,8 +20,8 @@ class DB009RelationshipTests(TestCase):
 
     def test_user_claims_relationship(self):
         """1. A user can own multiple claims."""
-        claim1 = Claim.objects.create(user=self.user1, text="Claim 1")
-        claim2 = Claim.objects.create(user=self.user1, text="Claim 2")
+        claim1 = Claim.objects.create(user=self.user1, text="Valid Claim 1")
+        claim2 = Claim.objects.create(user=self.user1, text="Valid Claim 2")
 
         self.assertEqual(self.user1.claims.count(), 2)
         self.assertIn(claim1, self.user1.claims.all())
@@ -29,7 +29,7 @@ class DB009RelationshipTests(TestCase):
 
     def test_claim_analysis_relationship(self):
         """2. A claim has exactly one analysis."""
-        claim = Claim.objects.create(user=self.user1, text="Analysis Claim")
+        claim = Claim.objects.create(user=self.user1, text="Analysis Valid Claim")
         analysis = Analysis.objects.create(
             claim=claim,
             credibility_score=50,
@@ -55,7 +55,7 @@ class DB009RelationshipTests(TestCase):
 
     def test_claim_feedback_relationship(self):
         """3. A claim can have feedback from multiple users."""
-        claim = Claim.objects.create(user=self.user1, text="Feedback Claim")
+        claim = Claim.objects.create(user=self.user1, text="Feedback Valid Claim")
         feedback1 = ClaimFeedback.objects.create(
             user=self.user1, claim=claim, feedback_type=FeedbackType.HELPFUL
         )
@@ -69,8 +69,8 @@ class DB009RelationshipTests(TestCase):
 
     def test_user_feedback_relationship(self):
         """4. A user can submit feedback on multiple claims."""
-        claim1 = Claim.objects.create(user=self.user1, text="Claim 1")
-        claim2 = Claim.objects.create(user=self.user1, text="Claim 2")
+        claim1 = Claim.objects.create(user=self.user1, text="Valid Claim 1")
+        claim2 = Claim.objects.create(user=self.user1, text="Valid Claim 2")
 
         feedback1 = ClaimFeedback.objects.create(
             user=self.user2, claim=claim1, feedback_type=FeedbackType.HELPFUL

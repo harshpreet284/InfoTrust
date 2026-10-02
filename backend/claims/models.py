@@ -3,7 +3,9 @@ import uuid
 from django.conf import settings
 from django.core.validators import MaxLengthValidator, MinLengthValidator
 from django.db import models
+from django.db.models.functions import Length
 
+models.TextField.register_lookup(Length)
 
 class ClaimStatus(models.TextChoices):
     PENDING = "PENDING", "Pending"
@@ -29,6 +31,12 @@ class Claim(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["submitted_at"], name="claim_submitted_at_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(text__length__gte=10),
+                name="valid_claim_text_length",
+            ),
         ]
 
     def __str__(self):
