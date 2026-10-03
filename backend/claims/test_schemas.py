@@ -9,9 +9,9 @@ from claims.schemas import ClaimCreateSchema, ClaimResponseSchema
 
 class TestClaimSchemas(TestCase):
 
-    def test_claim_create_schema_valid(self):
+    def test_claim_create_schema_valid_and_normalized(self):
         # Valid claim_text of at least 10 characters
-        payload = {"claim_text": "This is a valid claim text."}
+        payload = {"claim_text": "   This is a valid claim text.   "}
         schema = ClaimCreateSchema(**payload)
         self.assertEqual(schema.claim_text, "This is a valid claim text.")
 
@@ -20,15 +20,54 @@ class TestClaimSchemas(TestCase):
         with self.assertRaises(ValidationError):
             ClaimCreateSchema(**payload)
 
-    def test_claim_create_schema_too_short(self):
-        payload = {"claim_text": "Too short"} # 9 chars
+    def test_claim_create_schema_exact_min_length(self):
+        payload = {"claim_text": "   1234567890   "}
+        schema = ClaimCreateSchema(**payload)
+        self.assertEqual(schema.claim_text, "1234567890")
+
+    def test_claim_create_schema_below_min_length(self):
+        payload = {"claim_text": "   123456789   "} # 9 chars after trim
         with self.assertRaises(ValidationError):
             ClaimCreateSchema(**payload)
 
-    def test_claim_create_schema_too_long(self):
-        payload = {"claim_text": "A" * 2001}
+    def test_claim_create_schema_whitespace_only(self):
+        payload = {"claim_text": "          "}
         with self.assertRaises(ValidationError):
             ClaimCreateSchema(**payload)
+
+    def test_claim_create_schema_exact_max_length(self):
+        payload = {"claim_text": "   " + ("A" * 2000) + "   "}
+        schema = ClaimCreateSchema(**payload)
+        self.assertEqual(len(schema.claim_text), 2000)
+
+    def test_claim_create_schema_above_max_length(self):
+        payload = {"claim_text": "   " + ("A" * 2001) + "   "}
+        with self.assertRaises(ValidationError):
+            ClaimCreateSchema(**payload)
+
+    def test_claim_create_schema_plain_text_violation_basic(self):
+        payload = {"claim_text": "This is a <b>valid</b> claim text."}
+        with self.assertRaises(ValidationError) as ctx:
+            ClaimCreateSchema(**payload)
+        self.assertIn("HTML is not allowed", str(ctx.exception))
+
+    def test_claim_create_schema_plain_text_violation_script(self):
+        payload = {"claim_text": "<script>alert(1)</script>"}
+        with self.assertRaises(ValidationError) as ctx:
+            ClaimCreateSchema(**payload)
+        self.assertIn("HTML is not allowed", str(ctx.exception))
+
+    def test_claim_create_schema_plain_text_violation_link(self):
+        payload = {"claim_text": "Check out <a href='x'>this link</a>"}
+        with self.assertRaises(ValidationError) as ctx:
+            ClaimCreateSchema(**payload)
+        self.assertIn("HTML is not allowed", str(ctx.exception))
+
+    def test_claim_create_schema_plain_text_valid_symbols(self):
+        # Valid plain text with math and emoticons
+        payload = {"claim_text": "I love it <3 and 5 < 10"}
+        schema = ClaimCreateSchema(**payload)
+        self.assertEqual(schema.claim_text, "I love it <3 and 5 < 10")
 
     def test_claim_response_schema_serialization(self):
         # Create an UNSAVED Claim instance
