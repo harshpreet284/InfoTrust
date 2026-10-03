@@ -20,6 +20,7 @@ from django.urls import path
 from ninja import NinjaAPI
 
 from authentication.api import router as auth_router
+from shared.exception_handlers import setup_exception_handlers
 
 api = NinjaAPI(
     title="InfoTrust API",
@@ -28,6 +29,8 @@ api = NinjaAPI(
 )
 
 api.add_router("/auth", auth_router)
+
+setup_exception_handlers(api)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
