@@ -25,6 +25,7 @@ class Claim(models.Model):
     status = models.CharField(
         max_length=20, choices=ClaimStatus.choices, default=ClaimStatus.PENDING
     )
+    is_deleted = models.BooleanField(default=False)
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

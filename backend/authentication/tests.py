@@ -87,7 +87,8 @@ class RegistrationAPITests(TestCase):
             self.assertEqual(response.status_code, 422)
 
             data = response.json()
-            self.assertIn("detail", data)
+            self.assertEqual(data.get("error_code"), "VALIDATION_ERROR")
+            self.assertFalse(data.get("success"))
 
             # Verify no user created
             self.assertEqual(User.objects.count(), 0)
@@ -112,7 +113,7 @@ class RegistrationAPITests(TestCase):
                 self.url, data=json.dumps(payload), content_type="application/json"
             )
             self.assertEqual(response.status_code, 422)
-            self.assertIn("detail", response.json())
+            self.assertEqual(response.json().get("error_code"), "VALIDATION_ERROR")
 
         self.assertEqual(User.objects.count(), 0)
 
@@ -125,7 +126,7 @@ class RegistrationAPITests(TestCase):
             self.url, data=json.dumps(payload), content_type="application/json"
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "VALIDATION_ERROR")
         self.assertEqual(User.objects.count(), 0)
 
     def test_normalization(self):
@@ -347,7 +348,7 @@ class LoginAPITests(TestCase):
             self.url, data=json.dumps(payload), content_type="application/json"
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "VALIDATION_ERROR")
 
 
 from datetime import timedelta
@@ -463,7 +464,7 @@ class RefreshTokenAPITests(TestCase):
             self.url, data=json.dumps({}), content_type="application/json"
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "VALIDATION_ERROR")
 
 
 class LogoutAPITests(TestCase):
@@ -565,7 +566,7 @@ class LogoutAPITests(TestCase):
             self.url, data=json.dumps({}), content_type="application/json"
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "VALIDATION_ERROR")
 
 
 class CurrentUserAPITests(TestCase):
@@ -619,14 +620,15 @@ class CurrentUserAPITests(TestCase):
         """Test that missing Authorization header returns 401."""
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json().get("detail"), "Unauthorized")
+        self.assertEqual(response.json().get("error_code"), "AUTHENTICATION_ERROR")
+        self.assertEqual(response.json().get("message"), "Unauthorized")
 
     def test_get_current_user_invalid_token(self):
         """Test that invalid Bearer token returns 401."""
         headers = {"HTTP_AUTHORIZATION": "Bearer invalid.token.here"}
         response = self.client.get(self.url, **headers)
         self.assertEqual(response.status_code, 401)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "AUTHENTICATION_ERROR")
 
     def test_get_current_user_disabled_account(self):
         """Test that a deactivated user's previously issued token returns 401."""
@@ -640,7 +642,7 @@ class CurrentUserAPITests(TestCase):
         response = self.client.get(self.url, **headers)
 
         self.assertEqual(response.status_code, 401)
-        self.assertIn("detail", response.json())
+        self.assertEqual(response.json().get("error_code"), "AUTHENTICATION_ERROR")
 
 
 from django.test import RequestFactory
