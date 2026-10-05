@@ -59,8 +59,9 @@ class ClaimSelectorTests(TestCase):
         retrieved = get_claim(self.claim1.id, self.admin)
         self.assertEqual(retrieved.id, self.claim1.id)
 
-    def test_get_claim_non_owner_behaves_as_does_not_exist(self):
-        with self.assertRaises(Claim.DoesNotExist):
+    def test_get_claim_non_owner_raises_authorization_error(self):
+        from ninja.errors import AuthorizationError
+        with self.assertRaises(AuthorizationError):
             get_claim(self.claim1.id, self.other_user)
 
     def test_get_claim_soft_deleted_excluded(self):

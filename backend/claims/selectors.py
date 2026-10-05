@@ -1,5 +1,6 @@
 import uuid
 from django.db.models import QuerySet
+from ninja.errors import AuthorizationError
 from authentication.models import User
 from claims.models import Claim
 
@@ -12,10 +13,11 @@ def get_claim(claim_id: uuid.UUID, user: User) -> Claim:
     """
     qs = Claim.objects.filter(id=claim_id, is_deleted=False)
     
-    if not user.is_superuser:
-        qs = qs.filter(user=user)
+    claim = qs.get()
+    if not user.is_superuser and claim.user_id != user.id:
+        raise AuthorizationError("You do not have permission to view this claim.")
         
-    return qs.get()
+    return claim
 
 
 def list_all_claims_for_admin() -> QuerySet[Claim]:

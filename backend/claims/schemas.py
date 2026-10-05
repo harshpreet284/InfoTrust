@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from ninja import ModelSchema, Schema
@@ -47,4 +48,31 @@ class ClaimSubmitSuccessOut(Schema):
     success: bool = True
     message: str = "Claim submitted successfully."
     data: ClaimResponseSchema
+
+
+class ClaimDetailResponseSchema(Schema):
+    id: uuid.UUID
+    claim_text: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    analysis_available: bool
+
+    @staticmethod
+    def resolve_claim_text(obj: Claim) -> str:
+        return obj.text
+
+    @staticmethod
+    def resolve_created_at(obj: Claim) -> datetime:
+        return obj.submitted_at
+
+    @staticmethod
+    def resolve_analysis_available(obj: Claim) -> bool:
+        return hasattr(obj, 'analysis')
+
+
+class ClaimDetailSuccessOut(Schema):
+    success: bool = True
+    message: str = "Claim retrieved successfully."
+    data: ClaimDetailResponseSchema
 
