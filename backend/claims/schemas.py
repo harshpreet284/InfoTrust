@@ -41,3 +41,10 @@ class ClaimResponseSchema(ModelSchema):
     @staticmethod
     def resolve_created_at(obj: Claim) -> datetime:
         return obj.submitted_at
+
+
+class ClaimSubmitSuccessOut(Schema):
+    success: bool = True
+    message: str = "Claim submitted successfully."
+    data: ClaimResponseSchema
+
