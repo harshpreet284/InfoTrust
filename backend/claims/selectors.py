@@ -1,8 +1,19 @@
 import uuid
-from django.db.models import QuerySet
+from typing import Optional
+from django.db.models import F, QuerySet
 from ninja.errors import AuthorizationError
 from authentication.models import User
 from claims.models import Claim
+
+
+ORDERING_MAP = {
+    "-created_at": ("-submitted_at", "-id"),
+    "created_at": ("submitted_at", "id"),
+    "-credibility_score": (F("analysis__credibility_score").desc(nulls_last=True), "-submitted_at", "-id"),
+    "credibility_score": (F("analysis__credibility_score").asc(nulls_last=True), "submitted_at", "id"),
+    "-status": ("-status", "-submitted_at", "-id"),
+    "status": ("status", "-submitted_at", "-id"),
+}
 
 
 def get_claim(claim_id: uuid.UUID, user: User) -> Claim:
@@ -29,12 +40,26 @@ def list_all_claims_for_admin() -> QuerySet[Claim]:
     return Claim.objects.filter(is_deleted=False).select_related("user").order_by("-submitted_at")
 
 
-def get_user_claim_history(user: User) -> QuerySet[Claim]:
+def get_user_claim_history(user: User, ordering: Optional[str] = None) -> QuerySet[Claim]:
     """
     Retrieves all active claims owned by a specific user.
-    Orders chronologically by submitted_at (newest first).
+    Defaults to newest submissions first (-submitted_at, -id).
+    Pre-fetches the analysis relation for efficient serialization.
+    Raises ValueError for any unsupported non-None ordering.
     """
-    return Claim.objects.filter(user=user, is_deleted=False).order_by("-submitted_at")
+    if ordering is None:
+        order_fields = ("-submitted_at", "-id")
+    elif ordering in ORDERING_MAP:
+        order_fields = ORDERING_MAP[ordering]
+    else:
+        allowed = ", ".join(sorted(ORDERING_MAP.keys()))
+        raise ValueError(f"Unsupported ordering '{ordering}'. Allowed fields: {allowed}")
+
+    return (
+        Claim.objects.filter(user=user, is_deleted=False)
+        .select_related("analysis")
+        .order_by(*order_fields)
+    )
 
 
 def get_recent_claims() -> QuerySet[Claim]:

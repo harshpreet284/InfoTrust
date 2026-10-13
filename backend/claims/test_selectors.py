@@ -6,6 +6,7 @@ from datetime import timedelta
 from django.utils import timezone
 from authentication.models import User
 from claims.models import Claim, ClaimStatus
+from analysis.models import Analysis
 from claims.selectors import (
     get_claim,
     list_all_claims_for_admin,
@@ -130,3 +131,89 @@ class ClaimSelectorTests(TestCase):
         qs = get_recent_claims()
         # The queryset shouldn't be sliced (it has count() natively)
         self.assertEqual(qs.count(), 3)
+
+    # 5. get_user_claim_history ordering & NULLS LAST tests
+    def test_user_history_sorting_created_at_asc_and_desc(self):
+        qs_desc = get_user_claim_history(self.owner, ordering="-created_at")
+        self.assertEqual(qs_desc.first().id, self.claim2.id)
+        self.assertEqual(qs_desc.last().id, self.claim1.id)
+
+        qs_asc = get_user_claim_history(self.owner, ordering="created_at")
+        self.assertEqual(qs_asc.first().id, self.claim1.id)
+        self.assertEqual(qs_asc.last().id, self.claim2.id)
+
+    def test_user_history_sorting_credibility_score_asc_nulls_last(self):
+        # Create claims with: score 10.0, score 95.0, Analysis with None score, and no Analysis
+        c_low = Claim.objects.create(user=self.owner, text="Claim with low credibility score", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_low, credibility_score=10.0)
+
+        c_high = Claim.objects.create(user=self.owner, text="Claim with high credibility score", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_high, credibility_score=95.0)
+
+        c_null_score = Claim.objects.create(user=self.owner, text="Claim with analysis but null score", status=ClaimStatus.PROCESSING)
+        Analysis.objects.create(claim=c_null_score, credibility_score=None)
+
+        # self.claim1 and self.claim2 have no Analysis
+        qs = get_user_claim_history(self.owner, ordering="credibility_score")
+        results = list(qs)
+        
+        # First two must be 10.0 then 95.0
+        self.assertEqual(results[0].id, c_low.id)
+        self.assertEqual(results[1].id, c_high.id)
+
+        # Remaining items must be null credibility scores (c_null_score, claim1, claim2)
+        remaining_ids = [c.id for c in results[2:]]
+        self.assertIn(c_null_score.id, remaining_ids)
+        self.assertIn(self.claim1.id, remaining_ids)
+        self.assertIn(self.claim2.id, remaining_ids)
+
+    def test_user_history_sorting_credibility_score_desc_nulls_last(self):
+        c_low = Claim.objects.create(user=self.owner, text="Claim with low credibility score", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_low, credibility_score=10.0)
+
+        c_high = Claim.objects.create(user=self.owner, text="Claim with high credibility score", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_high, credibility_score=95.0)
+
+        c_null_score = Claim.objects.create(user=self.owner, text="Claim with analysis but null score", status=ClaimStatus.PROCESSING)
+        Analysis.objects.create(claim=c_null_score, credibility_score=None)
+
+        qs = get_user_claim_history(self.owner, ordering="-credibility_score")
+        results = list(qs)
+
+        # First two must be 95.0 then 10.0
+        self.assertEqual(results[0].id, c_high.id)
+        self.assertEqual(results[1].id, c_low.id)
+
+        # Remaining items must be null credibility scores
+        remaining_ids = [c.id for c in results[2:]]
+        self.assertIn(c_null_score.id, remaining_ids)
+        self.assertIn(self.claim1.id, remaining_ids)
+        self.assertIn(self.claim2.id, remaining_ids)
+
+    def test_user_history_sorting_status_asc_and_desc(self):
+        c_completed = Claim.objects.create(user=self.owner, text="Completed claim text", status=ClaimStatus.COMPLETED)
+        
+        # COMPLETED starts with C, PENDING starts with P
+        qs_asc = get_user_claim_history(self.owner, ordering="status")
+        self.assertEqual(qs_asc.first().status, ClaimStatus.COMPLETED)
+
+        qs_desc = get_user_claim_history(self.owner, ordering="-status")
+        self.assertEqual(qs_desc.first().status, ClaimStatus.PENDING)
+
+    def test_user_history_unsupported_ordering_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            get_user_claim_history(self.owner, ordering="unsupported_column")
+        self.assertIn("Unsupported ordering 'unsupported_column'", str(ctx.exception))
+
+    def test_user_history_select_related_analysis_efficiency(self):
+        c = Claim.objects.create(user=self.owner, text="Claim with analysis test", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c, credibility_score=80.0, verdict="CREDIBLE")
+
+        qs = get_user_claim_history(self.owner)
+        with self.assertNumQueries(1):
+            for claim in qs:
+                # Reading analysis shouldn't trigger additional SQL queries
+                if hasattr(claim, "analysis") and claim.analysis is not None:
+                    _ = claim.analysis.credibility_score
+                    _ = claim.analysis.verdict
+
