@@ -402,3 +402,304 @@ class ClaimApiTests(TestCase):
         self.assertNotIn("user_id", item)
         self.assertNotIn("is_deleted", item)
 
+    # ==========================================
+    # API-011: Update Claim API Tests (CLAIM-004)
+    # ==========================================
+
+    def test_patch_claim_unauthenticated(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Updated text that is long enough."}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_patch_claim_invalid_token(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Updated text that is long enough."}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer invalid.token.value",
+        )
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_patch_claim_owner_success(self):
+        new_text = "This is a freshly updated claim text that is sufficiently long."
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": new_text}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        # Top-level keys
+        self.assertSetEqual(set(data.keys()), {"success", "message", "data"})
+        self.assertTrue(data["success"])
+        self.assertEqual(data["message"], "Claim updated successfully.")
+
+        # Data payload keys
+        self.assertSetEqual(set(data["data"].keys()), {"id"})
+        self.assertEqual(data["data"]["id"], str(self.claim.id))
+
+        # Database state verification
+        self.claim.refresh_from_db()
+        self.assertEqual(self.claim.text, new_text)
+        self.assertEqual(self.claim.status, ClaimStatus.PENDING)
+        self.assertFalse(self.claim.is_deleted)
+        self.assertIsNotNone(self.claim.updated_at)
+
+    def test_patch_claim_non_owner_forbidden(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Attempted update by non-owner."}),
+            content_type="application/json",
+            **self.other_headers,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error_code"], "PERMISSION_DENIED")
+
+    def test_patch_claim_admin_forbidden(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Attempted update by administrator."}),
+            content_type="application/json",
+            **self.admin_headers,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error_code"], "PERMISSION_DENIED")
+
+    def test_patch_claim_not_found(self):
+        import uuid
+        random_id = uuid.uuid4()
+        resp = self.client.patch(
+            f"/api/v1/claims/{random_id}",
+            data=json.dumps({"claim_text": "Valid text for missing claim."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_patch_claim_soft_deleted(self):
+        self.claim.is_deleted = True
+        self.claim.save(update_fields=["is_deleted"])
+
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Valid text for soft-deleted claim."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_patch_claim_malformed_uuid(self):
+        resp = self.client.patch(
+            "/api/v1/claims/not-a-valid-uuid",
+            data=json.dumps({"claim_text": "Valid text with bad UUID."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_status_processing_conflict(self):
+        self.claim.status = ClaimStatus.PROCESSING
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Valid text for processing claim."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "HTTP_409_ERROR")
+        self.assertEqual(data["message"], "Analysis already started")
+
+    def test_patch_claim_status_completed_conflict(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Valid text for completed claim."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+
+    def test_patch_claim_status_failed_conflict(self):
+        self.claim.status = ClaimStatus.FAILED
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Valid text for failed claim."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+
+    def test_patch_claim_validation_missing_text(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_validation_too_short(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Short"}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_validation_too_long(self):
+        long_text = "A" * 2001
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": long_text}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_validation_whitespace_only(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "          "}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_validation_html_rejected(self):
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "<b>This has HTML tags</b> and is long enough."}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_patch_claim_extra_fields_immunity(self):
+        valid_text = "Valid updated text with lots of characters."
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({
+                "claim_text": valid_text,
+                "status": "COMPLETED",
+                "user_id": str(self.other_user.id),
+                "is_deleted": True,
+                "id": str(self.claim.id),
+                "verdict": "VERIFIED",
+                "credibility_score": 99.0,
+            }),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        self.claim.refresh_from_db()
+        self.assertEqual(self.claim.text, valid_text)
+        self.assertEqual(self.claim.status, ClaimStatus.PENDING)
+        self.assertFalse(self.claim.is_deleted)
+        self.assertEqual(self.claim.user, self.user)
+
+    def _is_conditional_claim_update(self, qs, kwargs):
+        if qs.model is not Claim or not {"text", "updated_at"}.issubset(kwargs.keys()):
+            return False
+        where_filters = {}
+        for child in qs.query.where.children:
+            target = getattr(getattr(child, "lhs", None), "target", None)
+            if target and hasattr(target, "name"):
+                where_filters[target.name] = getattr(child, "rhs", None)
+        return (
+            where_filters.get("id") == self.claim.id
+            and where_filters.get("status") == ClaimStatus.PENDING
+            and where_filters.get("is_deleted") is False
+        )
+
+    def test_patch_claim_zero_row_concurrent_status_change(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), status=ClaimStatus.PROCESSING)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.patch(
+                f"/api/v1/claims/{self.claim.id}",
+                data=json.dumps({"claim_text": "Updated text for status transition."}),
+                content_type="application/json",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+            self.assertEqual(resp.json()["message"], "Analysis already started")
+
+    def test_patch_claim_zero_row_concurrent_soft_delete(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), is_deleted=True)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.patch(
+                f"/api/v1/claims/{self.claim.id}",
+                data=json.dumps({"claim_text": "Updated text for soft deletion."}),
+                content_type="application/json",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_patch_claim_zero_row_defensive_fallback(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                return 0
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.patch(
+                f"/api/v1/claims/{self.claim.id}",
+                data=json.dumps({"claim_text": "Updated text for fallback."}),
+                content_type="application/json",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+            self.assertEqual(resp.json()["message"], "Claim update conflict. The claim could not be updated.")

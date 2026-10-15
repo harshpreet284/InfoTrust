@@ -10,8 +10,10 @@ from claims.schemas import (
     ClaimDetailSuccessOut,
     ClaimHistoryFilterSchema,
     ClaimHistoryPaginationOut,
+    ClaimUpdateSchema,
+    ClaimUpdateSuccessOut,
 )
-from claims.services import submit_claim
+from claims.services import submit_claim, update_claim
 from claims.selectors import get_claim, get_user_claim_history
 
 router = Router(tags=["Claims"])
@@ -66,4 +68,14 @@ def get_claim_detail(request, claim_id: uuid.UUID):
         "success": True,
         "message": "Claim retrieved successfully.",
         "data": claim,
+    }
+
+
+@router.patch("/{claim_id}", response={200: ClaimUpdateSuccessOut}, auth=RoleAuth(["USER", "ADMIN"]))
+def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSchema):
+    claim = update_claim(claim_id=claim_id, user=request.user, payload=payload)
+    return 200, {
+        "success": True,
+        "message": "Claim updated successfully.",
+        "data": {"id": claim.id},
     }

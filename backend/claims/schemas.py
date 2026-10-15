@@ -129,3 +129,19 @@ class ClaimHistoryPaginationOut(Schema):
     results: List[ClaimHistoryItemSchema]
 
 
+class ClaimUpdateSchema(ClaimCreateSchema):
+    """
+    Schema for updating claim text.
+    Reuses existing validation: min 10, max 2000, whitespace stripping, and HTML rejection.
+    """
+    pass
+
+
+class ClaimUpdateDataOut(Schema):
+    id: uuid.UUID
+
+
+class ClaimUpdateSuccessOut(Schema):
+    success: bool = True
+    message: str = "Claim updated successfully."
+    data: ClaimUpdateDataOut

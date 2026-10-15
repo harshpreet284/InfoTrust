@@ -5,7 +5,7 @@ from ninja.errors import AuthorizationError, HttpError
 
 from authentication.models import User
 from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
-from claims.schemas import ClaimCreateSchema
+from claims.schemas import ClaimCreateSchema, ClaimUpdateSchema
 from claims.services import (
     _get_claim_for_mutation,
     submit_claim,
@@ -60,28 +60,155 @@ class ClaimServiceTests(TestCase):
             _get_claim_for_mutation(self.claim.id, self.owner)
 
     def test_update_claim_success(self):
-        payload = ClaimCreateSchema(claim_text="Updated text that is long enough.")
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
         updated = update_claim(self.claim.id, self.owner, payload)
         
         self.claim.refresh_from_db()
         self.assertEqual(self.claim.text, "Updated text that is long enough.")
         self.assertEqual(updated.text, "Updated text that is long enough.")
+        self.assertIsNotNone(self.claim.updated_at)
 
     def test_update_claim_admin_forbidden(self):
-        payload = ClaimCreateSchema(claim_text="Updated text that is long enough.")
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
         with self.assertRaisesMessage(AuthorizationError, "You do not have permission to access this claim."):
             update_claim(self.claim.id, self.admin, payload)
 
-    def test_update_claim_invalid_status(self):
+    def test_update_claim_non_owner_forbidden(self):
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
+        with self.assertRaisesMessage(AuthorizationError, "You do not have permission to access this claim."):
+            update_claim(self.claim.id, self.other_user, payload)
+
+    def test_update_claim_invalid_status_processing(self):
         self.claim.status = ClaimStatus.PROCESSING
         self.claim.save(update_fields=['status'])
-        
-        payload = ClaimCreateSchema(claim_text="Updated text that is long enough.")
+
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
         with self.assertRaises(HttpError) as context:
             update_claim(self.claim.id, self.owner, payload)
-            
+
         self.assertEqual(context.exception.status_code, 409)
         self.assertEqual(str(context.exception), "Analysis already started")
+
+    def test_update_claim_invalid_status_completed(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=['status'])
+
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
+        with self.assertRaises(HttpError) as context:
+            update_claim(self.claim.id, self.owner, payload)
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(str(context.exception), "Analysis already started")
+
+    def test_update_claim_invalid_status_failed(self):
+        self.claim.status = ClaimStatus.FAILED
+        self.claim.save(update_fields=['status'])
+
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
+        with self.assertRaises(HttpError) as context:
+            update_claim(self.claim.id, self.owner, payload)
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(str(context.exception), "Analysis already started")
+
+    def test_update_claim_nonexistent_raises_404(self):
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
+        with self.assertRaisesMessage(Http404, "Claim not found."):
+            update_claim(uuid.uuid4(), self.owner, payload)
+
+    def test_update_claim_soft_deleted_raises_404(self):
+        self.claim.is_deleted = True
+        self.claim.save(update_fields=['is_deleted'])
+
+        payload = ClaimUpdateSchema(claim_text="Updated text that is long enough.")
+        with self.assertRaisesMessage(Http404, "Claim not found."):
+            update_claim(self.claim.id, self.owner, payload)
+
+    def _is_conditional_claim_update(self, qs, kwargs):
+        if qs.model is not Claim or not {"text", "updated_at"}.issubset(kwargs.keys()):
+            return False
+        where_filters = {}
+        for child in qs.query.where.children:
+            target = getattr(getattr(child, "lhs", None), "target", None)
+            if target and hasattr(target, "name"):
+                where_filters[target.name] = getattr(child, "rhs", None)
+        return (
+            where_filters.get("id") == self.claim.id
+            and where_filters.get("status") == ClaimStatus.PENDING
+            and where_filters.get("is_deleted") is False
+        )
+
+    def test_update_claim_zero_row_concurrent_status_change(self):
+        """
+        Deterministic test: claim status transitions away from PENDING
+        after initial check but before conditional update executes.
+        Interception is strictly narrowed to the conditional update for this claim.
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                # Mutate database row via unpatched update to avoid recursion:
+                original_update(Claim.objects.filter(id=self.claim.id), status=ClaimStatus.PROCESSING)
+                # Execute original conditional query (matches 0 rows):
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaises(HttpError) as ctx:
+                update_claim(self.claim.id, self.owner, ClaimUpdateSchema(claim_text="Updated text that is long enough."))
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(str(ctx.exception), "Analysis already started")
+
+    def test_update_claim_zero_row_concurrent_soft_delete(self):
+        """
+        Deterministic test: claim is soft-deleted after initial check
+        but before conditional update executes.
+        Interception is strictly narrowed to the conditional update for this claim.
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                # Soft-delete the database row via unpatched update:
+                original_update(Claim.objects.filter(id=self.claim.id), is_deleted=True)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaises(Claim.DoesNotExist):
+                update_claim(self.claim.id, self.owner, ClaimUpdateSchema(claim_text="Updated text that is long enough."))
+
+    def test_update_claim_zero_row_defensive_fallback(self):
+        """
+        Deterministic test: conditional update returns 0 rows while claim remains
+        active and PENDING in the database (unexpected update conflict).
+        Interception is strictly narrowed to the conditional update for this claim.
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_update(qs, kwargs):
+                # Return 0 rows without modifying DB row
+                return 0
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaises(HttpError) as ctx:
+                update_claim(self.claim.id, self.owner, ClaimUpdateSchema(claim_text="Updated text that is long enough."))
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(str(ctx.exception), "Claim update conflict. The claim could not be updated.")
+
+
 
     def test_delete_claim_success_owner(self):
         delete_claim(self.claim.id, self.owner)
