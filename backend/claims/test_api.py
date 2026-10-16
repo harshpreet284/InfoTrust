@@ -2,7 +2,7 @@ import json
 from django.test import TestCase, Client
 
 from authentication.models import User
-from claims.models import Claim, ClaimStatus
+from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
 from analysis.models import Analysis
 
 class ClaimApiTests(TestCase):
@@ -11,6 +11,7 @@ class ClaimApiTests(TestCase):
         self.user = User.objects.create_user(email="test@example.com", password="password123", full_name="Test User")
         self.other_user = User.objects.create_user(email="other@example.com", password="password123", full_name="Other User")
         self.admin = User.objects.create_superuser(email="admin@example.com", password="password123", full_name="Admin")
+        self.app_admin = User.objects.create_user(email="appadmin@example.com", password="password123", full_name="App Admin", role="ADMIN")
         
         # Obtain a valid JWT token via the existing API
         resp = self.client.post("/api/v1/auth/login", data=json.dumps({"email": "test@example.com", "password": "password123"}), content_type="application/json")
@@ -23,6 +24,9 @@ class ClaimApiTests(TestCase):
         resp3 = self.client.post("/api/v1/auth/login", data=json.dumps({"email": "admin@example.com", "password": "password123"}), content_type="application/json")
         self.admin_headers = {"HTTP_AUTHORIZATION": f"Bearer {resp3.json()['data']['access_token']}"}
         
+        resp4 = self.client.post("/api/v1/auth/login", data=json.dumps({"email": "appadmin@example.com", "password": "password123"}), content_type="application/json")
+        self.app_admin_headers = {"HTTP_AUTHORIZATION": f"Bearer {resp4.json()['data']['access_token']}"}
+
         self.claim = Claim.objects.create(
             user=self.user,
             text="Initial claim text that is long enough.",
@@ -703,3 +707,192 @@ class ClaimApiTests(TestCase):
             self.assertEqual(resp.status_code, 409)
             self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
             self.assertEqual(resp.json()["message"], "Claim update conflict. The claim could not be updated.")
+
+    def test_patch_claim_app_admin_role_cannot_update_other_user_claim(self):
+        initial_text = self.claim.text
+        resp = self.client.patch(
+            f"/api/v1/claims/{self.claim.id}",
+            data=json.dumps({"claim_text": "Admin trying to edit claim text."}),
+            content_type="application/json",
+            **self.app_admin_headers,
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error_code"], "PERMISSION_DENIED")
+
+        self.claim.refresh_from_db()
+        self.assertEqual(self.claim.text, initial_text)
+
+    def test_delete_claim_unauthenticated(self):
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_delete_claim_owner_success(self):
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.headers)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.content, b"")
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.is_deleted)
+        self.assertTrue(Claim.objects.filter(id=self.claim.id).exists())
+
+    def test_delete_claim_non_owner_forbidden(self):
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.other_headers)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error_code"], "PERMISSION_DENIED")
+
+        self.claim.refresh_from_db()
+        self.assertFalse(self.claim.is_deleted)
+
+    def test_delete_claim_admin_role_non_superuser_success(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.app_admin_headers)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.content, b"")
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.is_deleted)
+
+    def test_delete_claim_superuser_success(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.admin_headers)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.content, b"")
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.is_deleted)
+
+    def test_delete_claim_status_conflict_owner(self):
+        self.claim.status = ClaimStatus.PROCESSING
+        self.claim.save(update_fields=["status"])
+
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.headers)
+        self.assertEqual(resp.status_code, 409)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "HTTP_409_ERROR")
+        self.assertEqual(data["message"], "Cannot delete analyzed claim")
+
+        self.claim.refresh_from_db()
+        self.assertFalse(self.claim.is_deleted)
+
+    def test_delete_claim_not_found(self):
+        import uuid
+        random_id = uuid.uuid4()
+        resp = self.client.delete(f"/api/v1/claims/{random_id}", **self.headers)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_delete_claim_soft_deleted(self):
+        self.claim.is_deleted = True
+        self.claim.save(update_fields=["is_deleted"])
+
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.headers)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_delete_claim_malformed_uuid(self):
+        resp = self.client.delete("/api/v1/claims/not-a-valid-uuid", **self.headers)
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_delete_claim_retains_related_objects_and_excludes_from_endpoints(self):
+        feedback = ClaimFeedback.objects.create(
+            user=self.user,
+            claim=self.claim,
+            feedback_type=FeedbackType.HELPFUL,
+        )
+
+        resp = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.headers)
+        self.assertEqual(resp.status_code, 204)
+
+        # Database rows still exist
+        self.assertTrue(Claim.objects.filter(id=self.claim.id).exists())
+        self.assertTrue(ClaimFeedback.objects.filter(id=feedback.id).exists())
+
+        # Excluded from GET /api/v1/claims/{id}
+        get_resp = self.client.get(f"/api/v1/claims/{self.claim.id}", **self.headers)
+        self.assertEqual(get_resp.status_code, 404)
+
+        # Excluded from GET /api/v1/claims/history
+        history_resp = self.client.get("/api/v1/claims/history", **self.headers)
+        self.assertEqual(history_resp.status_code, 200)
+        history_ids = [item["id"] for item in history_resp.json()["results"]]
+        self.assertNotIn(str(self.claim.id), history_ids)
+
+    def _is_conditional_claim_delete(self, qs, kwargs):
+        if qs.model is not Claim or not {"is_deleted", "updated_at"}.issubset(kwargs.keys()):
+            return False
+        where_filters = {}
+        for child in qs.query.where.children:
+            target = getattr(getattr(child, "lhs", None), "target", None)
+            if target and hasattr(target, "name"):
+                where_filters[target.name] = getattr(child, "rhs", None)
+        return (
+            where_filters.get("id") == self.claim.id
+            and where_filters.get("is_deleted") is False
+        )
+
+    def test_delete_claim_zero_row_concurrent_status_change(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), status=ClaimStatus.PROCESSING)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.delete(
+                f"/api/v1/claims/{self.claim.id}",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+            self.assertEqual(resp.json()["message"], "Cannot delete analyzed claim")
+
+    def test_delete_claim_zero_row_concurrent_soft_delete(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), is_deleted=True)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.delete(
+                f"/api/v1/claims/{self.claim.id}",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 404)
+            self.assertEqual(resp.json()["error_code"], "NOT_FOUND")
+
+    def test_delete_claim_zero_row_defensive_fallback(self):
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                return 0
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            resp = self.client.delete(
+                f"/api/v1/claims/{self.claim.id}",
+                **self.headers,
+            )
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
+            self.assertEqual(resp.json()["message"], "Claim delete conflict. The claim could not be updated.")

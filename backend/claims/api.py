@@ -13,7 +13,7 @@ from claims.schemas import (
     ClaimUpdateSchema,
     ClaimUpdateSuccessOut,
 )
-from claims.services import submit_claim, update_claim
+from claims.services import delete_claim, submit_claim, update_claim
 from claims.selectors import get_claim, get_user_claim_history
 
 router = Router(tags=["Claims"])
@@ -79,3 +79,9 @@ def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSche
         "message": "Claim updated successfully.",
         "data": {"id": claim.id},
     }
+
+
+@router.delete("/{claim_id}", response={204: None}, auth=RoleAuth(["USER", "ADMIN"]))
+def delete_existing_claim(request, claim_id: uuid.UUID):
+    delete_claim(claim_id=claim_id, user=request.user)
+    return 204, None

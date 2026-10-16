@@ -84,17 +84,76 @@ def update_claim(claim_id: uuid.UUID, user: User, payload: ClaimUpdateSchema) ->
     return claim
 
 
+def _is_admin_user(user: User) -> bool:
+    """
+    Checks if a user has administrator privileges.
+    Recognizes application admins (role == 'ADMIN') and Django superusers (is_superuser == True).
+    """
+    return getattr(user, "role", None) == "ADMIN" or getattr(user, "is_superuser", False)
+
+
+def _get_claim_for_deletion(claim_id: uuid.UUID, user: User) -> Claim:
+    """
+    Internal helper to securely fetch a claim for deletion operations.
+    Excludes soft-deleted claims entirely (treated as Not Found via Http404).
+    Ensures the user is either the claim owner or an administrator.
+    Normal non-owners are rejected with AuthorizationError (HTTP 403).
+    """
+    try:
+        claim = Claim.objects.get(id=claim_id, is_deleted=False)
+    except ObjectDoesNotExist:
+        raise Http404("Claim not found.")
+
+    if claim.user != user and not _is_admin_user(user):
+        raise AuthorizationError(message="You do not have permission to access this claim.")
+
+    return claim
+
+
 def delete_claim(claim_id: uuid.UUID, user: User) -> None:
     """
     Soft-deletes a claim.
-    Owners may only delete PENDING claims.
-    Admins may delete ANY claim regardless of status.
+    Owners may only delete active PENDING claims.
+    Admins (role=='ADMIN' or is_superuser) may delete ANY active claim regardless of status.
+    Executes an atomic conditional update and distinguishes:
+      - 404 Not Found (missing record or already soft-deleted)
+      - 409 Conflict (normal owner status conflict)
+      - 409 Conflict (defensive unexpected update conflict)
     """
-    claim = _get_claim_for_mutation(claim_id, user)
+    claim = _get_claim_for_deletion(claim_id, user)
+    is_admin = _is_admin_user(user)
 
-    # Normal owners must have PENDING status
-    if not user.is_superuser and claim.status != ClaimStatus.PENDING:
+    # Normal owners cannot delete claims once analysis has started/completed/failed
+    if not is_admin and claim.status != ClaimStatus.PENDING:
         raise HttpError(409, "Cannot delete analyzed claim")
 
-    claim.is_deleted = True
-    claim.save(update_fields=['is_deleted', 'updated_at'])
+    now = timezone.now()
+    if is_admin:
+        updated_count = Claim.objects.filter(
+            id=claim.id,
+            is_deleted=False,
+        ).update(is_deleted=True, updated_at=now)
+    else:
+        updated_count = Claim.objects.filter(
+            id=claim.id,
+            user=user,
+            status=ClaimStatus.PENDING,
+            is_deleted=False,
+        ).update(is_deleted=True, updated_at=now)
+
+    if updated_count == 0:
+        # Re-read state to distinguish missing/soft-deleted from status conflict
+        try:
+            current_claim = Claim.objects.get(id=claim.id)
+        except ObjectDoesNotExist:
+            raise Http404("Claim not found.")
+
+        if current_claim.is_deleted:
+            raise Http404("Claim not found.")
+
+        if not is_admin and current_claim.status != ClaimStatus.PENDING:
+            raise HttpError(409, "Cannot delete analyzed claim")
+
+        # Defensive fallback: record exists, is active, and passed status check,
+        # but conditional update affected 0 rows (unexpected update conflict).
+        raise HttpError(409, "Claim delete conflict. The claim could not be updated.")

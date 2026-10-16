@@ -7,6 +7,7 @@ from authentication.models import User
 from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
 from claims.schemas import ClaimCreateSchema, ClaimUpdateSchema
 from claims.services import (
+    _get_claim_for_deletion,
     _get_claim_for_mutation,
     submit_claim,
     update_claim,
@@ -18,6 +19,7 @@ class ClaimServiceTests(TestCase):
         self.owner = User.objects.create_user(email="owner@example.com", password="pwd", full_name="Owner")
         self.other_user = User.objects.create_user(email="other@example.com", password="pwd", full_name="Other")
         self.admin = User.objects.create_superuser(email="admin@example.com", password="pwd", full_name="Admin")
+        self.app_admin = User.objects.create_user(email="app_admin@example.com", password="pwd", full_name="App Admin", role="ADMIN")
         
         self.claim = Claim.objects.create(
             user=self.owner,
@@ -256,3 +258,104 @@ class ClaimServiceTests(TestCase):
         
         with self.assertRaisesMessage(Http404, "Claim not found."):
             delete_claim(self.claim.id, self.owner)
+
+    def test_delete_claim_non_owner_forbidden(self):
+        with self.assertRaisesMessage(AuthorizationError, "You do not have permission to access this claim."):
+            delete_claim(self.claim.id, self.other_user)
+
+    def test_delete_claim_admin_role_non_superuser(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=['status'])
+
+        delete_claim(self.claim.id, self.app_admin)
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.is_deleted)
+
+    def test_delete_claim_nonexistent_raises_404(self):
+        with self.assertRaisesMessage(Http404, "Claim not found."):
+            delete_claim(uuid.uuid4(), self.owner)
+
+    def test_helper_get_claim_for_deletion_app_admin_success(self):
+        retrieved = _get_claim_for_deletion(self.claim.id, self.app_admin)
+        self.assertEqual(retrieved.id, self.claim.id)
+
+    def test_helper_get_claim_for_deletion_non_owner_raises_403(self):
+        with self.assertRaisesMessage(AuthorizationError, "You do not have permission to access this claim."):
+            _get_claim_for_deletion(self.claim.id, self.other_user)
+
+    def _is_conditional_claim_delete(self, qs, kwargs):
+        if qs.model is not Claim or not {"is_deleted", "updated_at"}.issubset(kwargs.keys()):
+            return False
+        where_filters = {}
+        for child in qs.query.where.children:
+            target = getattr(getattr(child, "lhs", None), "target", None)
+            if target and hasattr(target, "name"):
+                where_filters[target.name] = getattr(child, "rhs", None)
+        return (
+            where_filters.get("id") == self.claim.id
+            and where_filters.get("is_deleted") is False
+        )
+
+    def test_delete_claim_zero_row_concurrent_status_change(self):
+        """
+        Deterministic test: claim status transitions away from PENDING
+        after initial check but before conditional delete executes.
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), status=ClaimStatus.PROCESSING)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaises(HttpError) as ctx:
+                delete_claim(self.claim.id, self.owner)
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(str(ctx.exception), "Cannot delete analyzed claim")
+
+    def test_delete_claim_zero_row_concurrent_soft_delete(self):
+        """
+        Deterministic test: claim is soft-deleted after initial check
+        but before conditional delete executes.
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                original_update(Claim.objects.filter(id=self.claim.id), is_deleted=True)
+                return original_update(qs, *args, **kwargs)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaisesMessage(Http404, "Claim not found."):
+                delete_claim(self.claim.id, self.owner)
+
+    def test_delete_claim_zero_row_defensive_fallback(self):
+        """
+        Deterministic test: conditional delete returns 0 rows while claim remains
+        active and PENDING in the database (unexpected update conflict).
+        """
+        from django.db.models import QuerySet
+        from unittest.mock import patch
+
+        original_update = QuerySet.update
+
+        def side_effect(qs, *args, **kwargs):
+            if self._is_conditional_claim_delete(qs, kwargs):
+                return 0
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            with self.assertRaises(HttpError) as ctx:
+                delete_claim(self.claim.id, self.owner)
+            self.assertEqual(ctx.exception.status_code, 409)
+            self.assertEqual(str(ctx.exception), "Claim delete conflict. The claim could not be updated.")
