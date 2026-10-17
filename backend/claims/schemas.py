@@ -145,3 +145,45 @@ class ClaimUpdateSuccessOut(Schema):
     success: bool = True
     message: str = "Claim updated successfully."
     data: ClaimUpdateDataOut
+
+
+class AdminClaimItemSchema(Schema):
+    claim_id: uuid.UUID
+    claim_text: str
+    submitted_by: str
+    analysis_status: str
+    verdict: Optional[str] = None
+    created_at: datetime
+
+    @staticmethod
+    def resolve_claim_id(obj: Claim) -> uuid.UUID:
+        return obj.id
+
+    @staticmethod
+    def resolve_claim_text(obj: Claim) -> str:
+        return obj.text
+
+    @staticmethod
+    def resolve_submitted_by(obj: Claim) -> str:
+        return obj.user.full_name or obj.user.email
+
+    @staticmethod
+    def resolve_analysis_status(obj: Claim) -> str:
+        return obj.status
+
+    @staticmethod
+    def resolve_verdict(obj: Claim) -> Optional[str]:
+        if hasattr(obj, "analysis") and obj.analysis is not None:
+            return obj.analysis.verdict
+        return None
+
+    @staticmethod
+    def resolve_created_at(obj: Claim) -> datetime:
+        return obj.submitted_at
+
+
+class AdminClaimPaginationOut(Schema):
+    count: int
+    next: Optional[str] = None
+    previous: Optional[str] = None
+    results: List[AdminClaimItemSchema]

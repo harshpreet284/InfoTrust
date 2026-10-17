@@ -1,10 +1,15 @@
 from typing import Optional
 from urllib.parse import urlencode
 import uuid
+from django.http import HttpRequest
 from ninja import Query, Router
+from ninja.errors import HttpError
+from ninja_jwt.authentication import JWTAuth
 
 from authentication.permissions import RoleAuth
+from shared.pagination import PaginationParamsSchema, paginate_queryset
 from claims.schemas import (
+    AdminClaimPaginationOut,
     ClaimCreateSchema,
     ClaimSubmitSuccessOut,
     ClaimDetailSuccessOut,
@@ -14,7 +19,7 @@ from claims.schemas import (
     ClaimUpdateSuccessOut,
 )
 from claims.services import delete_claim, submit_claim, update_claim
-from claims.selectors import get_claim, get_user_claim_history
+from claims.selectors import get_claim, get_user_claim_history, list_all_claims_for_admin
 
 router = Router(tags=["Claims"])
 
@@ -85,3 +90,37 @@ def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSche
 def delete_existing_claim(request, claim_id: uuid.UUID):
     delete_claim(claim_id=claim_id, user=request.user)
     return 204, None
+
+
+class AdminEndpointAuth(JWTAuth):
+    """
+    Endpoint-specific authorization for administrative endpoints.
+    Allows application admins (role == 'ADMIN') and Django superusers (is_superuser == True).
+    Rejects normal users with HTTP 403 PERMISSION_DENIED.
+    """
+    def authenticate(self, request: HttpRequest, token: str):
+        user = super().authenticate(request, token)
+        is_admin = getattr(user, "role", None) == "ADMIN" or getattr(user, "is_superuser", False)
+        if user and not is_admin:
+            raise HttpError(403, "You do not have permission to perform this action.")
+        return user
+
+
+admin_router = Router(tags=["Admin"])
+
+
+@admin_router.get("/claims", response={200: AdminClaimPaginationOut}, auth=AdminEndpointAuth())
+def list_admin_claims_endpoint(request, filters: Query[PaginationParamsSchema]):
+    qs = list_all_claims_for_admin()
+    total_count, next_link, prev_link, claims_page = paginate_queryset(
+        qs=qs,
+        page=filters.page,
+        page_size=filters.page_size,
+        base_path="/api/v1/admin/claims",
+    )
+    return 200, {
+        "count": total_count,
+        "next": next_link,
+        "previous": prev_link,
+        "results": claims_page,
+    }

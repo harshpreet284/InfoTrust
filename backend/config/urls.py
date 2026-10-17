@@ -20,7 +20,7 @@ from django.urls import path
 from ninja import NinjaAPI
 
 from authentication.api import router as auth_router
-from claims.api import router as claims_router
+from claims.api import router as claims_router, admin_router
 from shared.exception_handlers import setup_exception_handlers
 
 api = NinjaAPI(
@@ -31,6 +31,7 @@ api = NinjaAPI(
 
 api.add_router("/auth", auth_router)
 api.add_router("/claims", claims_router)
+api.add_router("/admin", admin_router)
 
 setup_exception_handlers(api)
 

@@ -34,10 +34,14 @@ def get_claim(claim_id: uuid.UUID, user: User) -> Claim:
 def list_all_claims_for_admin() -> QuerySet[Claim]:
     """
     Retrieves all active claims system-wide for the admin dashboard.
-    Orders chronologically by submitted_at (newest first).
-    Pre-fetches the user relation.
+    Orders chronologically by submitted_at (newest first) with deterministic tie-breaker.
+    Pre-fetches the user and analysis relations.
     """
-    return Claim.objects.filter(is_deleted=False).select_related("user").order_by("-submitted_at")
+    return (
+        Claim.objects.filter(is_deleted=False)
+        .select_related("user", "analysis")
+        .order_by("-submitted_at", "-id")
+    )
 
 
 def get_user_claim_history(user: User, ordering: Optional[str] = None) -> QuerySet[Claim]:

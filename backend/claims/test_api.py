@@ -896,3 +896,178 @@ class ClaimApiTests(TestCase):
             self.assertEqual(resp.status_code, 409)
             self.assertEqual(resp.json()["error_code"], "HTTP_409_ERROR")
             self.assertEqual(resp.json()["message"], "Claim delete conflict. The claim could not be updated.")
+
+    # =========================================================================
+    # API-013: Administrative Claims List Pagination & Authorization Tests
+    # =========================================================================
+
+    def test_admin_claims_list_default_pagination(self):
+        resp = self.client.get("/api/v1/admin/claims", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+
+        self.assertSetEqual(set(data.keys()), {"count", "next", "previous", "results"})
+        self.assertEqual(data["count"], 1)
+        self.assertIsNone(data["next"])
+        self.assertIsNone(data["previous"])
+        self.assertEqual(len(data["results"]), 1)
+
+        item = data["results"][0]
+        self.assertSetEqual(
+            set(item.keys()),
+            {"claim_id", "claim_text", "submitted_by", "analysis_status", "verdict", "created_at"},
+        )
+        self.assertEqual(item["claim_id"], str(self.claim.id))
+        self.assertEqual(item["claim_text"], self.claim.text)
+        self.assertEqual(item["submitted_by"], self.user.full_name)
+        self.assertEqual(item["analysis_status"], "PENDING")
+        self.assertIsNone(item["verdict"])
+        self.assertIn("T", item["created_at"])
+
+    def test_admin_claims_list_custom_page_size_and_navigation(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        now = timezone.now()
+        # Seed 4 additional claims to reach 5 total
+        c2 = Claim.objects.create(user=self.user, text="Second test claim text.")
+        c3 = Claim.objects.create(user=self.other_user, text="Third test claim text.")
+        c4 = Claim.objects.create(user=self.other_user, text="Fourth test claim text.")
+        c5 = Claim.objects.create(user=self.user, text="Fifth test claim text.")
+
+        Claim.objects.filter(id=self.claim.id).update(submitted_at=now - timedelta(seconds=50))
+        Claim.objects.filter(id=c2.id).update(submitted_at=now - timedelta(seconds=40))
+        Claim.objects.filter(id=c3.id).update(submitted_at=now - timedelta(seconds=30))
+        Claim.objects.filter(id=c4.id).update(submitted_at=now - timedelta(seconds=20))
+        Claim.objects.filter(id=c5.id).update(submitted_at=now - timedelta(seconds=10))
+
+        # Page 1: 2 items
+        resp1 = self.client.get("/api/v1/admin/claims?page=1&page_size=2", **self.admin_headers)
+        self.assertEqual(resp1.status_code, 200)
+        d1 = resp1.json()
+        self.assertEqual(d1["count"], 5)
+        self.assertEqual(len(d1["results"]), 2)
+        self.assertEqual(d1["next"], "/api/v1/admin/claims?page=2&page_size=2")
+        self.assertIsNone(d1["previous"])
+        self.assertEqual(d1["results"][0]["claim_id"], str(c5.id))
+        self.assertEqual(d1["results"][1]["claim_id"], str(c4.id))
+
+        # Page 2: 2 items
+        resp2 = self.client.get("/api/v1/admin/claims?page=2&page_size=2", **self.admin_headers)
+        self.assertEqual(resp2.status_code, 200)
+        d2 = resp2.json()
+        self.assertEqual(d2["count"], 5)
+        self.assertEqual(len(d2["results"]), 2)
+        self.assertEqual(d2["next"], "/api/v1/admin/claims?page=3&page_size=2")
+        self.assertEqual(d2["previous"], "/api/v1/admin/claims?page=1&page_size=2")
+        self.assertEqual(d2["results"][0]["claim_id"], str(c3.id))
+        self.assertEqual(d2["results"][1]["claim_id"], str(c2.id))
+
+        # Page 3: 1 item
+        resp3 = self.client.get("/api/v1/admin/claims?page=3&page_size=2", **self.admin_headers)
+        self.assertEqual(resp3.status_code, 200)
+        d3 = resp3.json()
+        self.assertEqual(d3["count"], 5)
+        self.assertEqual(len(d3["results"]), 1)
+        self.assertIsNone(d3["next"])
+        self.assertEqual(d3["previous"], "/api/v1/admin/claims?page=2&page_size=2")
+        self.assertEqual(d3["results"][0]["claim_id"], str(self.claim.id))
+
+    def test_admin_claims_list_max_page_size(self):
+        resp = self.client.get("/api/v1/admin/claims?page_size=100", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 1)
+
+    def test_admin_claims_list_validation_rejections(self):
+        for invalid_url in [
+            "/api/v1/admin/claims?page=0",
+            "/api/v1/admin/claims?page=-1",
+            "/api/v1/admin/claims?page_size=0",
+            "/api/v1/admin/claims?page_size=101",
+            "/api/v1/admin/claims?page=abc",
+        ]:
+            resp = self.client.get(invalid_url, **self.admin_headers)
+            self.assertEqual(resp.status_code, 422, f"Expected 422 for {invalid_url}")
+            self.assertEqual(resp.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_admin_claims_list_out_of_range_page(self):
+        resp = self.client.get("/api/v1/admin/claims?page=50&page_size=10", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"], [])
+        self.assertIsNone(data["next"])
+        self.assertEqual(data["previous"], "/api/v1/admin/claims?page=49&page_size=10")
+
+    def test_admin_claims_list_soft_deleted_excluded(self):
+        self.claim.is_deleted = True
+        self.claim.save(update_fields=["is_deleted"])
+
+        resp = self.client.get("/api/v1/admin/claims", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 0)
+        self.assertEqual(data["results"], [])
+
+    def test_admin_claims_list_with_and_without_analysis(self):
+        analyzed_claim = Claim.objects.create(
+            user=self.user,
+            text="Claim that has an analysis verdict.",
+            status=ClaimStatus.COMPLETED,
+        )
+        Analysis.objects.create(
+            claim=analyzed_claim,
+            verdict="CREDIBLE",
+            credibility_score=92.5,
+        )
+
+        resp = self.client.get("/api/v1/admin/claims", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        results = resp.json()["results"]
+        self.assertEqual(len(results), 2)
+
+        verdicts = {item["claim_id"]: item["verdict"] for item in results}
+        self.assertEqual(verdicts[str(analyzed_claim.id)], "CREDIBLE")
+        self.assertIsNone(verdicts[str(self.claim.id)])
+
+    def test_admin_claims_list_app_admin_role_success(self):
+        resp = self.client.get("/api/v1/admin/claims", **self.app_admin_headers)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_admin_claims_list_superuser_with_user_role_success(self):
+        # Specifically tests Finding 1: superuser whose role is 'USER'
+        su_user = User.objects.create_user(
+            email="superuser_user_role@example.com",
+            password="password123",
+            full_name="Super User Role USER",
+            role="USER",
+            is_superuser=True,
+        )
+        login_resp = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps({"email": "superuser_user_role@example.com", "password": "password123"}),
+            content_type="application/json",
+        )
+        su_headers = {"HTTP_AUTHORIZATION": f"Bearer {login_resp.json()['data']['access_token']}"}
+
+        resp = self.client.get("/api/v1/admin/claims", **su_headers)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_admin_claims_list_superuser_with_admin_role_success(self):
+        resp = self.client.get("/api/v1/admin/claims", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+
+    def test_admin_claims_list_normal_user_forbidden(self):
+        resp = self.client.get("/api/v1/admin/claims", **self.headers)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.json()["error_code"], "PERMISSION_DENIED")
+
+    def test_admin_claims_list_unauthenticated(self):
+        resp = self.client.get("/api/v1/admin/claims")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_admin_claims_list_invalid_token(self):
+        resp = self.client.get("/api/v1/admin/claims", HTTP_AUTHORIZATION="Bearer invalid_token_xyz")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")

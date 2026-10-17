@@ -92,13 +92,25 @@ class ClaimSelectorTests(TestCase):
         self.assertEqual(qs.last().id, self.claim1.id) # created first
 
     def test_admin_selector_user_relation_efficient(self):
-        # We test that the select_related exists by evaluating and accessing user properties
-        # In Django test cases, asserting num_queries is a robust way to check select_related behavior
+        # We test that select_related("user", "analysis") exists and is efficient
+        # for claims both with and without an Analysis record.
+        Analysis.objects.create(claim=self.claim1, verdict="CREDIBLE", credibility_score=85.0)
+
         qs = list_all_claims_for_admin()
         with self.assertNumQueries(1):
+            analyzed_count = 0
+            unanalyzed_count = 0
             for claim in qs:
                 # Accessing user.full_name should not trigger a new DB query because of select_related
                 _ = claim.user.full_name
+                if hasattr(claim, "analysis") and claim.analysis is not None:
+                    _ = claim.analysis.verdict
+                    analyzed_count += 1
+                else:
+                    _ = hasattr(claim, "analysis")
+                    unanalyzed_count += 1
+            self.assertEqual(analyzed_count, 1)
+            self.assertEqual(unanalyzed_count, 2)
 
     # 3. get_user_claim_history tests
     def test_user_history_contains_only_owners_active_claims(self):
