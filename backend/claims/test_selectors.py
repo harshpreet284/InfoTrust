@@ -2,7 +2,7 @@ import uuid
 from django.test import TestCase
 from django.core.exceptions import ObjectDoesNotExist
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from django.utils import timezone
 from authentication.models import User
 from claims.models import Claim, ClaimStatus
@@ -228,4 +228,181 @@ class ClaimSelectorTests(TestCase):
                 if hasattr(claim, "analysis") and claim.analysis is not None:
                     _ = claim.analysis.credibility_score
                     _ = claim.analysis.verdict
+
+    # 6. Search selector tests (API-014)
+    def test_user_history_search_partial_case_insensitive(self):
+        c_vac = Claim.objects.create(
+            user=self.owner,
+            text="A breakthrough mRNA Vaccine trial has commenced.",
+            status=ClaimStatus.PENDING,
+        )
+        qs = get_user_claim_history(self.owner, search="vAcCiNe")
+        ids = {c.id for c in qs}
+        self.assertIn(c_vac.id, ids)
+        self.assertNotIn(self.claim1.id, ids)
+
+    def test_user_history_search_leading_trailing_whitespace_trimmed(self):
+        c_vac = Claim.objects.create(
+            user=self.owner,
+            text="A breakthrough mRNA Vaccine trial has commenced.",
+            status=ClaimStatus.PENDING,
+        )
+        qs_trimmed = get_user_claim_history(self.owner, search="  vaccine  ")
+        qs_exact = get_user_claim_history(self.owner, search="vaccine")
+        self.assertEqual(list(qs_trimmed.values_list("id", flat=True)), list(qs_exact.values_list("id", flat=True)))
+        self.assertIn(c_vac.id, {c.id for c in qs_trimmed})
+
+    def test_user_history_search_empty_and_whitespace_only_unfiltered(self):
+        qs_empty = get_user_claim_history(self.owner, search="")
+        qs_whitespace = get_user_claim_history(self.owner, search="     ")
+        qs_none = get_user_claim_history(self.owner, search=None)
+        self.assertEqual(qs_empty.count(), 2)
+        self.assertEqual(qs_whitespace.count(), 2)
+        self.assertEqual(list(qs_empty), list(qs_none))
+
+    def test_user_history_search_non_matching_query(self):
+        qs = get_user_claim_history(self.owner, search="nonexistentphrase98765")
+        self.assertEqual(qs.count(), 0)
+
+    def test_user_history_search_soft_deleted_claims_excluded(self):
+        deleted = Claim.objects.create(
+            user=self.owner,
+            text="Vaccine discussion that was soft deleted.",
+            status=ClaimStatus.PENDING,
+            is_deleted=True,
+        )
+        qs = get_user_claim_history(self.owner, search="vaccine")
+        ids = {c.id for c in qs}
+        self.assertNotIn(deleted.id, ids)
+
+    def test_user_history_search_iso_date_matching_controlled_timestamp(self):
+        dt_target = datetime(2026, 6, 15, 10, 0, 0, tzinfo=dt_timezone.utc)
+        dt_other = datetime(2026, 8, 1, 12, 0, 0, tzinfo=dt_timezone.utc)
+        dt_unrelated = datetime(2026, 9, 1, 14, 0, 0, tzinfo=dt_timezone.utc)
+
+        # Claim A: submitted on 2026-06-15, no date text
+        c_by_date = Claim.objects.create(
+            user=self.owner,
+            text="Clinical study results released without mention of day.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_by_date.id).update(submitted_at=dt_target)
+
+        # Claim B: submitted on 2026-08-01, but contains "2026-06-15" in text
+        c_by_text = Claim.objects.create(
+            user=self.owner,
+            text="The event occurred on 2026-06-15 according to reports.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_by_text.id).update(submitted_at=dt_other)
+
+        # Claim C: submitted on 2026-09-01, unrelated text
+        c_unrelated = Claim.objects.create(
+            user=self.owner,
+            text="Completely unrelated topic with no dates.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_unrelated.id).update(submitted_at=dt_unrelated)
+
+        qs = get_user_claim_history(self.owner, search="2026-06-15")
+        ids = {c.id for c in qs}
+        self.assertIn(c_by_date.id, ids)
+        self.assertIn(c_by_text.id, ids)
+        self.assertNotIn(c_unrelated.id, ids)
+
+    def test_user_history_search_non_date_text_only(self):
+        # Query that resembles a date pattern but is invalid date
+        qs_invalid_date = get_user_claim_history(self.owner, search="2026-99-99")
+        self.assertEqual(qs_invalid_date.count(), 0)
+
+        # Query that is a word like 'October' only matches text
+        c_month = Claim.objects.create(
+            user=self.owner,
+            text="Announcement made in October.",
+            status=ClaimStatus.PENDING,
+        )
+        qs_month = get_user_claim_history(self.owner, search="October")
+        self.assertEqual(qs_month.count(), 1)
+        self.assertEqual(qs_month.first().id, c_month.id)
+
+    def test_user_history_search_owner_isolation_preserved(self):
+        # Other user has a matching claim
+        Claim.objects.create(
+            user=self.other_user,
+            text="Other user's confidential vaccine post.",
+            status=ClaimStatus.PENDING,
+        )
+        # Owner also has a matching claim
+        owner_vac = Claim.objects.create(
+            user=self.owner,
+            text="Owner's personal vaccine post.",
+            status=ClaimStatus.PENDING,
+        )
+        qs = get_user_claim_history(self.owner, search="vaccine")
+        ids = {c.id for c in qs}
+        self.assertIn(owner_vac.id, ids)
+        self.assertEqual(qs.filter(user=self.other_user).count(), 0)
+
+    def test_admin_selector_search_system_wide(self):
+        c1 = Claim.objects.create(
+            user=self.owner,
+            text="System wide report on global warming.",
+            status=ClaimStatus.PENDING,
+        )
+        c2 = Claim.objects.create(
+            user=self.other_user,
+            text="Another view on global warming trends.",
+            status=ClaimStatus.PENDING,
+        )
+        qs = list_all_claims_for_admin(search="global warming")
+        ids = {c.id for c in qs}
+        self.assertIn(c1.id, ids)
+        self.assertIn(c2.id, ids)
+        # Verify both owners are present
+        owners = {c.user_id for c in qs}
+        self.assertIn(self.owner.id, owners)
+        self.assertIn(self.other_user.id, owners)
+
+    def test_admin_selector_search_soft_deleted_excluded(self):
+        deleted = Claim.objects.create(
+            user=self.other_user,
+            text="System wide report on global warming deleted.",
+            status=ClaimStatus.PENDING,
+            is_deleted=True,
+        )
+        qs = list_all_claims_for_admin(search="global warming")
+        ids = {c.id for c in qs}
+        self.assertNotIn(deleted.id, ids)
+
+    def test_admin_selector_search_efficiency(self):
+        c1 = Claim.objects.create(
+            user=self.owner,
+            text="Efficiency search analyzed claim.",
+            status=ClaimStatus.COMPLETED,
+        )
+        Analysis.objects.create(claim=c1, verdict="CREDIBLE", credibility_score=95.0)
+        c2 = Claim.objects.create(
+            user=self.other_user,
+            text="Efficiency search unanalyzed claim.",
+            status=ClaimStatus.PENDING,
+        )
+
+        qs = list_all_claims_for_admin(search="Efficiency search")
+        with self.assertNumQueries(1):
+            for claim in qs:
+                _ = claim.user.full_name
+                if hasattr(claim, "analysis") and claim.analysis is not None:
+                    _ = claim.analysis.verdict
+                else:
+                    _ = hasattr(claim, "analysis")
+
+    def test_search_special_characters_sql_escaped(self):
+        special_claim = Claim.objects.create(
+            user=self.owner,
+            text="Special 100% discount with 'single' and \"double\" quotes & more_symbols.",
+            status=ClaimStatus.PENDING,
+        )
+        for term in ["100%", "'single'", "\"double\"", "more_symbols", "&"]:
+            qs = get_user_claim_history(self.owner, search=term)
+            self.assertIn(special_claim.id, {c.id for c in qs}, f"Failed to match term: {term}")
 

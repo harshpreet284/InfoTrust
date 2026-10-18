@@ -9,6 +9,7 @@ from ninja_jwt.authentication import JWTAuth
 from authentication.permissions import RoleAuth
 from shared.pagination import PaginationParamsSchema, paginate_queryset
 from claims.schemas import (
+    AdminClaimFilterSchema,
     AdminClaimPaginationOut,
     ClaimCreateSchema,
     ClaimSubmitSuccessOut,
@@ -24,11 +25,19 @@ from claims.selectors import get_claim, get_user_claim_history, list_all_claims_
 router = Router(tags=["Claims"])
 
 
-def _build_history_page_link(request, page_num: int, page_size: int, ordering: Optional[str]) -> str:
+def _build_history_page_link(
+    request,
+    page_num: int,
+    page_size: int,
+    ordering: Optional[str] = None,
+    search: Optional[str] = None,
+) -> str:
     path = request.path if hasattr(request, "path") else "/api/v1/claims/history"
     params = {"page": page_num, "page_size": page_size}
     if ordering:
         params["ordering"] = ordering
+    if search:
+        params["search"] = search
     return f"{path}?{urlencode(params)}"
 
 
@@ -44,19 +53,25 @@ def submit_new_claim(request, payload: ClaimCreateSchema):
 
 @router.get("/history", response={200: ClaimHistoryPaginationOut}, auth=RoleAuth(["USER", "ADMIN"]))
 def get_user_claim_history_endpoint(request, filters: Query[ClaimHistoryFilterSchema]):
-    qs = get_user_claim_history(user=request.user, ordering=filters.ordering)
+    qs = get_user_claim_history(user=request.user, ordering=filters.ordering, search=filters.search)
     total_count = qs.count()
 
     offset = (filters.page - 1) * filters.page_size
     claims_page = list(qs[offset : offset + filters.page_size])
 
+    normalized_search = filters.search.strip() if filters.search and filters.search.strip() else None
+
     next_link = None
     if (filters.page * filters.page_size) < total_count:
-        next_link = _build_history_page_link(request, filters.page + 1, filters.page_size, filters.ordering)
+        next_link = _build_history_page_link(
+            request, filters.page + 1, filters.page_size, filters.ordering, normalized_search
+        )
 
     prev_link = None
     if filters.page > 1:
-        prev_link = _build_history_page_link(request, filters.page - 1, filters.page_size, filters.ordering)
+        prev_link = _build_history_page_link(
+            request, filters.page - 1, filters.page_size, filters.ordering, normalized_search
+        )
 
     return 200, {
         "count": total_count,
@@ -110,13 +125,16 @@ admin_router = Router(tags=["Admin"])
 
 
 @admin_router.get("/claims", response={200: AdminClaimPaginationOut}, auth=AdminEndpointAuth())
-def list_admin_claims_endpoint(request, filters: Query[PaginationParamsSchema]):
-    qs = list_all_claims_for_admin()
+def list_admin_claims_endpoint(request, filters: Query[AdminClaimFilterSchema]):
+    qs = list_all_claims_for_admin(search=filters.search)
+    normalized_search = filters.search.strip() if filters.search and filters.search.strip() else None
+    extra_params = {"search": normalized_search} if normalized_search else None
     total_count, next_link, prev_link, claims_page = paginate_queryset(
         qs=qs,
         page=filters.page,
         page_size=filters.page_size,
         base_path="/api/v1/admin/claims",
+        extra_params=extra_params,
     )
     return 200, {
         "count": total_count,

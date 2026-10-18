@@ -1,3 +1,4 @@
+from datetime import datetime, timezone as dt_timezone
 import json
 from django.test import TestCase, Client
 
@@ -1071,3 +1072,179 @@ class ClaimApiTests(TestCase):
         resp = self.client.get("/api/v1/admin/claims", HTTP_AUTHORIZATION="Bearer invalid_token_xyz")
         self.assertEqual(resp.status_code, 401)
         self.assertEqual(resp.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    # 7. Search API tests (API-014)
+    def test_user_claim_history_search_returns_filtered_results(self):
+        c_vac = Claim.objects.create(
+            user=self.user,
+            text="mRNA vaccine demonstrates high efficacy in trial.",
+            status=ClaimStatus.COMPLETED,
+        )
+        resp = self.client.get("/api/v1/claims/history?search=vaccine", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(len(data["results"]), 1)
+        self.assertEqual(data["results"][0]["id"], str(c_vac.id))
+
+    def test_user_claim_history_search_preserves_query_in_pagination_links(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        now = timezone.now()
+        # Seed 3 claims matching 'booster' for user
+        b1 = Claim.objects.create(user=self.user, text="Booster dose first study details.")
+        b2 = Claim.objects.create(user=self.user, text="Booster dose second study details.")
+        b3 = Claim.objects.create(user=self.user, text="Booster dose third study details.")
+        Claim.objects.filter(id=b1.id).update(submitted_at=now - timedelta(seconds=30))
+        Claim.objects.filter(id=b2.id).update(submitted_at=now - timedelta(seconds=20))
+        Claim.objects.filter(id=b3.id).update(submitted_at=now - timedelta(seconds=10))
+
+        # Page 1: 2 items
+        resp1 = self.client.get("/api/v1/claims/history?page=1&page_size=2&search=booster", **self.headers)
+        self.assertEqual(resp1.status_code, 200)
+        d1 = resp1.json()
+        self.assertEqual(d1["count"], 3)
+        self.assertEqual(len(d1["results"]), 2)
+        self.assertEqual(d1["next"], "/api/v1/claims/history?page=2&page_size=2&search=booster")
+        self.assertIsNone(d1["previous"])
+
+        # Page 2: 1 item
+        resp2 = self.client.get("/api/v1/claims/history?page=2&page_size=2&search=booster", **self.headers)
+        self.assertEqual(resp2.status_code, 200)
+        d2 = resp2.json()
+        self.assertEqual(d2["count"], 3)
+        self.assertEqual(len(d2["results"]), 1)
+        self.assertIsNone(d2["next"])
+        self.assertEqual(d2["previous"], "/api/v1/claims/history?page=1&page_size=2&search=booster")
+
+    def test_user_claim_history_search_preserves_ordering_and_search_in_links(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        now = timezone.now()
+        b1 = Claim.objects.create(user=self.user, text="Antibody response booster first study.")
+        b2 = Claim.objects.create(user=self.user, text="Antibody response booster second study.")
+        b3 = Claim.objects.create(user=self.user, text="Antibody response booster third study.")
+        Claim.objects.filter(id=b1.id).update(submitted_at=now - timedelta(seconds=30))
+        Claim.objects.filter(id=b2.id).update(submitted_at=now - timedelta(seconds=20))
+        Claim.objects.filter(id=b3.id).update(submitted_at=now - timedelta(seconds=10))
+
+        resp = self.client.get(
+            "/api/v1/claims/history?page=1&page_size=2&ordering=-created_at&search=booster",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 3)
+        self.assertIn("ordering=-created_at", data["next"])
+        self.assertIn("search=booster", data["next"])
+        self.assertIn("page=2", data["next"])
+        self.assertIn("page_size=2", data["next"])
+
+    def test_user_claim_history_empty_search_omits_search_from_pagination_links(self):
+        # 2 claims exist (self.claim + 1 new)
+        Claim.objects.create(user=self.user, text="Second generic test claim.")
+        for url in [
+            "/api/v1/claims/history?page=1&page_size=1&search=",
+            "/api/v1/claims/history?page=1&page_size=1&search=%20%20%20",
+        ]:
+            resp = self.client.get(url, **self.headers)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["count"], 2)
+            self.assertIsNotNone(data["next"])
+            self.assertNotIn("search", data["next"])
+
+    def test_user_claim_history_search_iso_date_controlled_timestamp(self):
+        dt_target = datetime(2026, 6, 15, 10, 0, 0, tzinfo=dt_timezone.utc)
+        dt_other = datetime(2026, 8, 1, 12, 0, 0, tzinfo=dt_timezone.utc)
+        dt_unrelated = datetime(2026, 9, 1, 14, 0, 0, tzinfo=dt_timezone.utc)
+
+        # Claim A: submitted on 2026-06-15, no date text
+        c_by_date = Claim.objects.create(
+            user=self.user,
+            text="Clinical study results released without mention of day.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_by_date.id).update(submitted_at=dt_target)
+
+        # Claim B: submitted on 2026-08-01, text contains 2026-06-15
+        c_by_text = Claim.objects.create(
+            user=self.user,
+            text="The event occurred on 2026-06-15 according to reports.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_by_text.id).update(submitted_at=dt_other)
+
+        # Claim C: submitted on 2026-09-01, unrelated text
+        c_unrelated = Claim.objects.create(
+            user=self.user,
+            text="Completely unrelated topic with no dates.",
+            status=ClaimStatus.PENDING,
+        )
+        Claim.objects.filter(id=c_unrelated.id).update(submitted_at=dt_unrelated)
+
+        resp = self.client.get("/api/v1/claims/history?search=2026-06-15", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        ids = {item["id"] for item in data["results"]}
+        self.assertIn(str(c_by_date.id), ids)
+        self.assertIn(str(c_by_text.id), ids)
+        self.assertNotIn(str(c_unrelated.id), ids)
+
+    def test_admin_claims_search_returns_filtered_results(self):
+        c1 = Claim.objects.create(user=self.user, text="Arctic climate shift observed.")
+        c2 = Claim.objects.create(user=self.other_user, text="Tropical climate anomalies reported.")
+        Claim.objects.create(user=self.user, text="Completely unrelated tech topic.")
+
+        resp = self.client.get("/api/v1/admin/claims?search=climate", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 2)
+        claim_ids = {item["claim_id"] for item in data["results"]}
+        self.assertIn(str(c1.id), claim_ids)
+        self.assertIn(str(c2.id), claim_ids)
+
+    def test_admin_claims_search_preserves_query_in_pagination_links(self):
+        from datetime import timedelta
+        from django.utils import timezone
+
+        now = timezone.now()
+        c1 = Claim.objects.create(user=self.user, text="Deforestation impact on ecosystem first.")
+        c2 = Claim.objects.create(user=self.other_user, text="Deforestation impact on ecosystem second.")
+        c3 = Claim.objects.create(user=self.user, text="Deforestation impact on ecosystem third.")
+        Claim.objects.filter(id=c1.id).update(submitted_at=now - timedelta(seconds=30))
+        Claim.objects.filter(id=c2.id).update(submitted_at=now - timedelta(seconds=20))
+        Claim.objects.filter(id=c3.id).update(submitted_at=now - timedelta(seconds=10))
+
+        resp = self.client.get("/api/v1/admin/claims?page=1&page_size=2&search=deforestation", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 3)
+        self.assertEqual(data["next"], "/api/v1/admin/claims?page=2&page_size=2&search=deforestation")
+        self.assertIsNone(data["previous"])
+
+        resp2 = self.client.get("/api/v1/admin/claims?page=2&page_size=2&search=deforestation", **self.admin_headers)
+        self.assertEqual(resp2.status_code, 200)
+        d2 = resp2.json()
+        self.assertIsNone(d2["next"])
+        self.assertEqual(d2["previous"], "/api/v1/admin/claims?page=1&page_size=2&search=deforestation")
+
+    def test_admin_claims_search_empty_omits_param(self):
+        resp = self.client.get("/api/v1/admin/claims?page=1&page_size=1&search=", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        if data["next"]:
+            self.assertNotIn("search", data["next"])
+
+    def test_admin_claims_search_authorization_enforced(self):
+        # Normal user gets 403
+        resp_user = self.client.get("/api/v1/admin/claims?search=climate", **self.headers)
+        self.assertEqual(resp_user.status_code, 403)
+        self.assertEqual(resp_user.json()["error_code"], "PERMISSION_DENIED")
+
+        # Unauthenticated gets 401
+        resp_unauth = self.client.get("/api/v1/admin/claims?search=climate")
+        self.assertEqual(resp_unauth.status_code, 401)
+        self.assertEqual(resp_unauth.json()["error_code"], "AUTHENTICATION_ERROR")

@@ -7,6 +7,7 @@ from pydantic import Field, field_validator
 
 from claims.models import Claim
 from claims.selectors import ORDERING_MAP
+from shared.pagination import PaginationParamsSchema
 
 
 import re
@@ -83,6 +84,7 @@ class ClaimHistoryFilterSchema(Schema):
     page: int = Field(1, ge=1, description="Page number (1-based)")
     page_size: int = Field(10, ge=1, le=100, description="Page size (1-100)")
     ordering: Optional[str] = Field(None, description="Sort field (e.g. -created_at, credibility_score)")
+    search: Optional[str] = Field(None, description="Search query string")
 
     @field_validator("ordering")
     @classmethod
@@ -187,3 +189,7 @@ class AdminClaimPaginationOut(Schema):
     next: Optional[str] = None
     previous: Optional[str] = None
     results: List[AdminClaimItemSchema]
+
+
+class AdminClaimFilterSchema(PaginationParamsSchema):
+    search: Optional[str] = Field(None, description="Search query string")
