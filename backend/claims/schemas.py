@@ -1,11 +1,12 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from ninja import ModelSchema, Schema
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
-from claims.models import Claim
+from analysis.models import Verdict
+from claims.models import Claim, ClaimStatus
 from claims.selectors import ORDERING_MAP
 from shared.pagination import PaginationParamsSchema
 
@@ -80,11 +81,48 @@ class ClaimDetailSuccessOut(Schema):
     data: ClaimDetailResponseSchema
 
 
+def _normalize_and_validate_status(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        v_cleaned = v.strip().upper()
+        if not v_cleaned:
+            return None
+        if v_cleaned not in ClaimStatus.values:
+            allowed = ", ".join(ClaimStatus.values)
+            raise ValueError(f"Invalid status '{v}'. Allowed values: {allowed}")
+        return v_cleaned
+    raise ValueError("Status must be a string.")
+
+
+def _normalize_and_validate_verdict(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        v_cleaned = v.strip().upper()
+        if not v_cleaned:
+            return None
+        if v_cleaned not in Verdict.values:
+            allowed = ", ".join(Verdict.values)
+            raise ValueError(f"Invalid verdict '{v}'. Allowed values: {allowed}")
+        return v_cleaned
+    raise ValueError("Verdict must be a string.")
+
+
+def _validate_date_range(date_from: Optional[date], date_to: Optional[date]):
+    if date_from and date_to and date_from > date_to:
+        raise ValueError(f"date_from ({date_from}) cannot be after date_to ({date_to}).")
+
+
 class ClaimHistoryFilterSchema(Schema):
     page: int = Field(1, ge=1, description="Page number (1-based)")
     page_size: int = Field(10, ge=1, le=100, description="Page size (1-100)")
     ordering: Optional[str] = Field(None, description="Sort field (e.g. -created_at, credibility_score)")
     search: Optional[str] = Field(None, description="Search query string")
+    status: Optional[str] = Field(None, description="Filter by claim analysis status (e.g. PENDING, PROCESSING, COMPLETED, FAILED)")
+    verdict: Optional[str] = Field(None, description="Filter by analysis verdict (e.g. CREDIBLE, UNCERTAIN, MISINFORMATION)")
+    date_from: Optional[date] = Field(None, description="Filter claims submitted on or after this date (YYYY-MM-DD)")
+    date_to: Optional[date] = Field(None, description="Filter claims submitted on or before this date (YYYY-MM-DD)")
 
     @field_validator("ordering")
     @classmethod
@@ -93,6 +131,21 @@ class ClaimHistoryFilterSchema(Schema):
             allowed = ", ".join(sorted(ORDERING_MAP.keys()))
             raise ValueError(f"Invalid ordering '{v}'. Allowed fields: {allowed}")
         return v
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        return _normalize_and_validate_status(v)
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def validate_verdict(cls, v: Optional[str]) -> Optional[str]:
+        return _normalize_and_validate_verdict(v)
+
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        _validate_date_range(self.date_from, self.date_to)
+        return self
 
 
 class ClaimHistoryItemSchema(Schema):
@@ -193,3 +246,23 @@ class AdminClaimPaginationOut(Schema):
 
 class AdminClaimFilterSchema(PaginationParamsSchema):
     search: Optional[str] = Field(None, description="Search query string")
+    status: Optional[str] = Field(None, description="Filter by claim analysis status (e.g. PENDING, PROCESSING, COMPLETED, FAILED)")
+    verdict: Optional[str] = Field(None, description="Filter by analysis verdict (e.g. CREDIBLE, UNCERTAIN, MISINFORMATION)")
+    date_from: Optional[date] = Field(None, description="Filter claims submitted on or after this date (YYYY-MM-DD)")
+    date_to: Optional[date] = Field(None, description="Filter claims submitted on or before this date (YYYY-MM-DD)")
+    user_id: Optional[uuid.UUID] = Field(None, description="Filter claims submitted by a specific user UUID")
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        return _normalize_and_validate_status(v)
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def validate_verdict(cls, v: Optional[str]) -> Optional[str]:
+        return _normalize_and_validate_verdict(v)
+
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        _validate_date_range(self.date_from, self.date_to)
+        return self

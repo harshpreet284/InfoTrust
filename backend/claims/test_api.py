@@ -1,10 +1,10 @@
-from datetime import datetime, timezone as dt_timezone
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 import json
 from django.test import TestCase, Client
 
 from authentication.models import User
 from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
-from analysis.models import Analysis
+from analysis.models import Analysis, Verdict
 
 class ClaimApiTests(TestCase):
     def setUp(self):
@@ -1248,3 +1248,325 @@ class ClaimApiTests(TestCase):
         resp_unauth = self.client.get("/api/v1/admin/claims?search=climate")
         self.assertEqual(resp_unauth.status_code, 401)
         self.assertEqual(resp_unauth.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    # API-015: Filtering Integration Tests
+    def test_user_history_filter_by_status(self):
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save()
+        c2 = Claim.objects.create(
+            user=self.user,
+            text="Second pending claim text is valid.",
+            status=ClaimStatus.PENDING,
+        )
+
+        # Exact case match
+        resp = self.client.get("/api/v1/claims/history?status=COMPLETED", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["id"], str(self.claim.id))
+
+        # Case normalization (lowercase)
+        resp_lower = self.client.get("/api/v1/claims/history?status=completed", **self.headers)
+        self.assertEqual(resp_lower.status_code, 200)
+        data_lower = resp_lower.json()
+        self.assertEqual(data_lower["count"], 1)
+        self.assertEqual(data_lower["results"][0]["id"], str(self.claim.id))
+
+        # Filter other status
+        resp_pending = self.client.get("/api/v1/claims/history?status=PENDING", **self.headers)
+        self.assertEqual(resp_pending.status_code, 200)
+        self.assertEqual(resp_pending.json()["count"], 1)
+        self.assertEqual(resp_pending.json()["results"][0]["id"], str(c2.id))
+
+    def test_user_history_filter_by_status_invalid_422(self):
+        resp = self.client.get("/api/v1/claims/history?status=INVALID_STATUS", **self.headers)
+        self.assertEqual(resp.status_code, 422)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "VALIDATION_ERROR")
+        self.assertIn("Invalid status", data["message"])
+
+    def test_user_history_filter_by_verdict(self):
+        Analysis.objects.create(claim=self.claim, verdict=Verdict.CREDIBLE, credibility_score=92.0)
+        c2 = Claim.objects.create(
+            user=self.user,
+            text="Second claim text for verdict test.",
+            status=ClaimStatus.COMPLETED,
+        )
+        Analysis.objects.create(claim=c2, verdict=Verdict.MISINFORMATION, credibility_score=18.0)
+        c3_unanalyzed = Claim.objects.create(
+            user=self.user,
+            text="Third claim with no analysis present.",
+            status=ClaimStatus.PENDING,
+        )
+
+        # CREDIBLE
+        resp = self.client.get("/api/v1/claims/history?verdict=CREDIBLE", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["results"][0]["id"], str(self.claim.id))
+        self.assertEqual(data["results"][0]["verdict"], "CREDIBLE")
+
+        # Case normalization (lowercase)
+        resp_lower = self.client.get("/api/v1/claims/history?verdict=credible", **self.headers)
+        self.assertEqual(resp_lower.status_code, 200)
+        self.assertEqual(resp_lower.json()["count"], 1)
+
+        # MISINFORMATION
+        resp_misinfo = self.client.get("/api/v1/claims/history?verdict=MISINFORMATION", **self.headers)
+        self.assertEqual(resp_misinfo.status_code, 200)
+        self.assertEqual(resp_misinfo.json()["count"], 1)
+        self.assertEqual(resp_misinfo.json()["results"][0]["id"], str(c2.id))
+
+        # Unanalyzed claim never returned when verdict is queried
+        resp_uncertain = self.client.get("/api/v1/claims/history?verdict=UNCERTAIN", **self.headers)
+        self.assertEqual(resp_uncertain.status_code, 200)
+        self.assertEqual(resp_uncertain.json()["count"], 0)
+
+    def test_user_history_filter_by_verdict_invalid_422(self):
+        resp = self.client.get("/api/v1/claims/history?verdict=NOT_A_VERDICT", **self.headers)
+        self.assertEqual(resp.status_code, 422)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "VALIDATION_ERROR")
+        self.assertIn("Invalid verdict", data["message"])
+
+    def test_user_history_filter_date_range_exact_boundaries(self):
+        # Precise boundary timestamps:
+        dt_start = datetime(2026, 7, 1, 0, 0, 0, 0, tzinfo=dt_timezone.utc)
+        dt_end = datetime(2026, 7, 1, 23, 59, 59, 999999, tzinfo=dt_timezone.utc)
+        dt_next = datetime(2026, 7, 2, 0, 0, 0, 0, tzinfo=dt_timezone.utc)
+        dt_prev = datetime(2026, 6, 30, 23, 59, 59, 999999, tzinfo=dt_timezone.utc)
+
+        c_start = Claim.objects.create(user=self.user, text="Claim at boundary start 00:00:00.")
+        c_end = Claim.objects.create(user=self.user, text="Claim at boundary end 23:59:59.")
+        c_next = Claim.objects.create(user=self.user, text="Claim next day 00:00:00.")
+        c_prev = Claim.objects.create(user=self.user, text="Claim previous day 23:59:59.")
+
+        Claim.objects.filter(id=c_start.id).update(submitted_at=dt_start)
+        Claim.objects.filter(id=c_end.id).update(submitted_at=dt_end)
+        Claim.objects.filter(id=c_next.id).update(submitted_at=dt_next)
+        Claim.objects.filter(id=c_prev.id).update(submitted_at=dt_prev)
+
+        # Single day range 2026-07-01 to 2026-07-01
+        resp = self.client.get("/api/v1/claims/history?date_from=2026-07-01&date_to=2026-07-01", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        result_ids = {r["id"] for r in data["results"]}
+        self.assertIn(str(c_start.id), result_ids)
+        self.assertIn(str(c_end.id), result_ids)
+        self.assertNotIn(str(c_next.id), result_ids)
+        self.assertNotIn(str(c_prev.id), result_ids)
+
+        # date_from only
+        resp_from = self.client.get("/api/v1/claims/history?date_from=2026-07-01", **self.headers)
+        self.assertEqual(resp_from.status_code, 200)
+        from_ids = {r["id"] for r in resp_from.json()["results"]}
+        self.assertIn(str(c_start.id), from_ids)
+        self.assertIn(str(c_end.id), from_ids)
+        self.assertIn(str(c_next.id), from_ids)
+        self.assertNotIn(str(c_prev.id), from_ids)
+
+        # date_to only
+        resp_to = self.client.get("/api/v1/claims/history?date_to=2026-07-01", **self.headers)
+        self.assertEqual(resp_to.status_code, 200)
+        to_ids = {r["id"] for r in resp_to.json()["results"]}
+        self.assertIn(str(c_start.id), to_ids)
+        self.assertIn(str(c_end.id), to_ids)
+        self.assertIn(str(c_prev.id), to_ids)
+        self.assertNotIn(str(c_next.id), to_ids)
+
+    def test_user_history_filter_inverted_date_range_422(self):
+        resp = self.client.get("/api/v1/claims/history?date_from=2026-07-10&date_to=2026-07-01", **self.headers)
+        self.assertEqual(resp.status_code, 422)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "VALIDATION_ERROR")
+        self.assertIn("cannot be after date_to", data["message"])
+
+    def test_user_history_filter_invalid_date_format_422(self):
+        resp1 = self.client.get("/api/v1/claims/history?date_from=2026-13-45", **self.headers)
+        self.assertEqual(resp1.status_code, 422)
+        self.assertEqual(resp1.json()["error_code"], "VALIDATION_ERROR")
+
+        resp2 = self.client.get("/api/v1/claims/history?date_to=not-a-date", **self.headers)
+        self.assertEqual(resp2.status_code, 422)
+        self.assertEqual(resp2.json()["error_code"], "VALIDATION_ERROR")
+
+    def test_user_history_pagination_preserves_all_filters(self):
+        dt_fixed = datetime(2026, 7, 2, 10, 0, 0, tzinfo=dt_timezone.utc)
+        claims = []
+        for i in range(3):
+            c = Claim.objects.create(
+                user=self.user,
+                text=f"Climate study index entry number {i} with enough length.",
+                status=ClaimStatus.COMPLETED,
+            )
+            Claim.objects.filter(id=c.id).update(submitted_at=dt_fixed - timedelta(seconds=i * 10))
+            Analysis.objects.create(claim=c, verdict=Verdict.CREDIBLE, credibility_score=90.0)
+            claims.append(c)
+
+        url = (
+            "/api/v1/claims/history?"
+            "page=1&page_size=2&"
+            "status=COMPLETED&verdict=CREDIBLE&"
+            "date_from=2026-07-01&date_to=2026-07-03&"
+            "ordering=-created_at&search=Climate"
+        )
+        resp = self.client.get(url, **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 3)
+        self.assertEqual(len(data["results"]), 2)
+        next_url = data["next"]
+        self.assertIsNotNone(next_url)
+        self.assertIn("page=2", next_url)
+        self.assertIn("page_size=2", next_url)
+        self.assertIn("status=COMPLETED", next_url)
+        self.assertIn("verdict=CREDIBLE", next_url)
+        self.assertIn("date_from=2026-07-01", next_url)
+        self.assertIn("date_to=2026-07-03", next_url)
+        self.assertIn("ordering=-created_at", next_url)
+        self.assertIn("search=Climate", next_url)
+
+        # Follow page 2
+        resp2 = self.client.get(next_url, **self.headers)
+        self.assertEqual(resp2.status_code, 200)
+        d2 = resp2.json()
+        self.assertEqual(len(d2["results"]), 1)
+        prev_url = d2["previous"]
+        self.assertIsNotNone(prev_url)
+        self.assertIn("page=1", prev_url)
+        self.assertIn("status=COMPLETED", prev_url)
+        self.assertIn("verdict=CREDIBLE", prev_url)
+        self.assertIn("date_from=2026-07-01", prev_url)
+        self.assertIn("date_to=2026-07-03", prev_url)
+        self.assertIn("ordering=-created_at", prev_url)
+        self.assertIn("search=Climate", prev_url)
+
+    def test_user_history_unsupplied_filters_omitted_from_links(self):
+        Claim.objects.create(user=self.user, text="Second claim for omission verification.")
+        resp = self.client.get("/api/v1/claims/history?page=1&page_size=1&status=PENDING", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIsNotNone(data["next"])
+        self.assertIn("status=PENDING", data["next"])
+        self.assertNotIn("verdict", data["next"])
+        self.assertNotIn("date_from", data["next"])
+        self.assertNotIn("date_to", data["next"])
+        self.assertNotIn("search", data["next"])
+
+    def test_admin_claims_filter_user_id(self):
+        # self.claim belongs to self.user
+        c_other = Claim.objects.create(user=self.other_user, text="Other user claim for admin filter.")
+
+        # Filter by self.user.id
+        resp_user = self.client.get(f"/api/v1/admin/claims?user_id={self.user.id}", **self.admin_headers)
+        self.assertEqual(resp_user.status_code, 200)
+        ids_user = {item["claim_id"] for item in resp_user.json()["results"]}
+        self.assertIn(str(self.claim.id), ids_user)
+        self.assertNotIn(str(c_other.id), ids_user)
+
+        # Filter by self.other_user.id
+        resp_other = self.client.get(f"/api/v1/admin/claims?user_id={self.other_user.id}", **self.admin_headers)
+        self.assertEqual(resp_other.status_code, 200)
+        ids_other = {item["claim_id"] for item in resp_other.json()["results"]}
+        self.assertIn(str(c_other.id), ids_other)
+        self.assertNotIn(str(self.claim.id), ids_other)
+
+    def test_admin_claims_filter_user_id_invalid_uuid_422(self):
+        resp = self.client.get("/api/v1/admin/claims?user_id=not-a-valid-uuid", **self.admin_headers)
+        self.assertEqual(resp.status_code, 422)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "VALIDATION_ERROR")
+
+    def test_admin_claims_filter_all_params_preserved_in_pagination(self):
+        dt_fixed = datetime(2026, 7, 2, 10, 0, 0, tzinfo=dt_timezone.utc)
+        for i in range(3):
+            c = Claim.objects.create(
+                user=self.user,
+                text=f"Renewable solar research report item {i} text.",
+                status=ClaimStatus.COMPLETED,
+            )
+            Claim.objects.filter(id=c.id).update(submitted_at=dt_fixed - timedelta(seconds=i * 10))
+            Analysis.objects.create(claim=c, verdict=Verdict.CREDIBLE, credibility_score=90.0)
+
+        url = (
+            "/api/v1/admin/claims?"
+            f"page=1&page_size=2&"
+            f"status=COMPLETED&verdict=CREDIBLE&"
+            f"date_from=2026-07-01&date_to=2026-07-03&"
+            f"search=Renewable&user_id={self.user.id}"
+        )
+        resp = self.client.get(url, **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 3)
+        next_url = data["next"]
+        self.assertIsNotNone(next_url)
+        self.assertIn("page=2", next_url)
+        self.assertIn("page_size=2", next_url)
+        self.assertIn("status=COMPLETED", next_url)
+        self.assertIn("verdict=CREDIBLE", next_url)
+        self.assertIn("date_from=2026-07-01", next_url)
+        self.assertIn("date_to=2026-07-03", next_url)
+        self.assertIn("search=Renewable", next_url)
+        self.assertIn(f"user_id={self.user.id}", next_url)
+        # Ordering must NOT be present in admin pagination links
+        self.assertNotIn("ordering", next_url)
+
+    def test_admin_claims_filter_authorization(self):
+        resp_user = self.client.get("/api/v1/admin/claims?status=COMPLETED", **self.headers)
+        self.assertEqual(resp_user.status_code, 403)
+        self.assertEqual(resp_user.json()["error_code"], "PERMISSION_DENIED")
+
+        resp_unauth = self.client.get("/api/v1/admin/claims?status=COMPLETED")
+        self.assertEqual(resp_unauth.status_code, 401)
+        self.assertEqual(resp_unauth.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_user_history_empty_and_whitespace_status_and_verdict_treated_as_absent(self):
+        c2 = Claim.objects.create(
+            user=self.user,
+            text="Second claim text for whitespace filter testing.",
+            status=ClaimStatus.COMPLETED,
+        )
+        Analysis.objects.create(claim=c2, verdict=Verdict.CREDIBLE, credibility_score=90.0)
+
+        urls = [
+            "/api/v1/claims/history?page=1&page_size=1&status=",
+            "/api/v1/claims/history?page=1&page_size=1&status=%20%20%20",
+            "/api/v1/claims/history?page=1&page_size=1&verdict=",
+            "/api/v1/claims/history?page=1&page_size=1&verdict=%20%20%20",
+            "/api/v1/claims/history?page=1&page_size=1&status=%20&verdict=%20%20",
+        ]
+        for url in urls:
+            resp = self.client.get(url, **self.headers)
+            self.assertEqual(resp.status_code, 200, f"Expected 200 for url: {url}")
+            data = resp.json()
+            self.assertEqual(data["count"], 2, f"Expected both claims returned for url: {url}")
+            self.assertIsNotNone(data["next"], f"Expected next link for url: {url}")
+            self.assertNotIn("status", data["next"], f"status should be omitted from next link for url: {url}")
+            self.assertNotIn("verdict", data["next"], f"verdict should be omitted from next link for url: {url}")
+
+    def test_admin_claims_empty_and_whitespace_status_and_verdict_treated_as_absent(self):
+        c2 = Claim.objects.create(
+            user=self.other_user,
+            text="Other user claim text for whitespace filter testing.",
+            status=ClaimStatus.COMPLETED,
+        )
+        Analysis.objects.create(claim=c2, verdict=Verdict.CREDIBLE, credibility_score=90.0)
+
+        urls = [
+            "/api/v1/admin/claims?page=1&page_size=1&status=",
+            "/api/v1/admin/claims?page=1&page_size=1&status=%20%20%20",
+            "/api/v1/admin/claims?page=1&page_size=1&verdict=",
+            "/api/v1/admin/claims?page=1&page_size=1&verdict=%20%20%20",
+            "/api/v1/admin/claims?page=1&page_size=1&status=%20&verdict=%20%20",
+        ]
+        for url in urls:
+            resp = self.client.get(url, **self.admin_headers)
+            self.assertEqual(resp.status_code, 200, f"Expected 200 for url: {url}")
+            data = resp.json()
+            self.assertGreaterEqual(data["count"], 2, f"Expected all claims returned for url: {url}")
+            self.assertIsNotNone(data["next"], f"Expected next link for url: {url}")
+            self.assertNotIn("status", data["next"], f"status should be omitted from next link for url: {url}")
+            self.assertNotIn("verdict", data["next"], f"verdict should be omitted from next link for url: {url}")
