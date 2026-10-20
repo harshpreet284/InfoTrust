@@ -7,11 +7,26 @@ from pydantic import Field, field_validator, model_validator
 
 from analysis.models import Verdict
 from claims.models import Claim, ClaimStatus
-from claims.selectors import ORDERING_MAP
 from shared.pagination import PaginationParamsSchema
 
 
 import re
+
+ALLOWED_CLAIM_ORDERING_FIELDS = frozenset({
+    "-created_at",
+    "created_at",
+    "-credibility_score",
+    "credibility_score",
+    "-status",
+    "status",
+})
+
+
+def _validate_ordering(v: Optional[str]) -> Optional[str]:
+    if v is not None and v not in ALLOWED_CLAIM_ORDERING_FIELDS:
+        allowed = ", ".join(sorted(ALLOWED_CLAIM_ORDERING_FIELDS))
+        raise ValueError(f"Invalid ordering '{v}'. Allowed fields: {allowed}")
+    return v
 
 class ClaimCreateSchema(Schema):
     claim_text: str = Field(..., min_length=10, max_length=2000)
@@ -127,10 +142,7 @@ class ClaimHistoryFilterSchema(Schema):
     @field_validator("ordering")
     @classmethod
     def validate_ordering(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ORDERING_MAP:
-            allowed = ", ".join(sorted(ORDERING_MAP.keys()))
-            raise ValueError(f"Invalid ordering '{v}'. Allowed fields: {allowed}")
-        return v
+        return _validate_ordering(v)
 
     @field_validator("status", mode="before")
     @classmethod
@@ -245,12 +257,18 @@ class AdminClaimPaginationOut(Schema):
 
 
 class AdminClaimFilterSchema(PaginationParamsSchema):
+    ordering: Optional[str] = Field(None, description="Sort field (e.g. -created_at, credibility_score)")
     search: Optional[str] = Field(None, description="Search query string")
     status: Optional[str] = Field(None, description="Filter by claim analysis status (e.g. PENDING, PROCESSING, COMPLETED, FAILED)")
     verdict: Optional[str] = Field(None, description="Filter by analysis verdict (e.g. CREDIBLE, UNCERTAIN, MISINFORMATION)")
     date_from: Optional[date] = Field(None, description="Filter claims submitted on or after this date (YYYY-MM-DD)")
     date_to: Optional[date] = Field(None, description="Filter claims submitted on or before this date (YYYY-MM-DD)")
     user_id: Optional[uuid.UUID] = Field(None, description="Filter claims submitted by a specific user UUID")
+
+    @field_validator("ordering")
+    @classmethod
+    def validate_ordering(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_ordering(v)
 
     @field_validator("status", mode="before")
     @classmethod

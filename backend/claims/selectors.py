@@ -129,14 +129,24 @@ def list_all_claims_for_admin(
     date_from: Optional[Union[date, str]] = None,
     date_to: Optional[Union[date, str]] = None,
     user_id: Optional[Union[uuid.UUID, str]] = None,
+    ordering: Optional[str] = None,
 ) -> QuerySet[Claim]:
     """
     Retrieves all active claims system-wide for the admin dashboard.
-    Orders chronologically by submitted_at (newest first) with deterministic tie-breaker.
+    Orders chronologically by submitted_at (newest first) with deterministic tie-breaker by default.
+    Supports ordering by created_at, credibility_score, and status (asc and desc).
     Pre-fetches the user and analysis relations.
     Applies optional search filter across claim text and submission date.
     Applies optional filters by status, verdict, date range (UTC boundaries), and user_id.
     """
+    if ordering is None:
+        order_fields = ("-submitted_at", "-id")
+    elif ordering in ORDERING_MAP:
+        order_fields = ORDERING_MAP[ordering]
+    else:
+        allowed = ", ".join(sorted(ORDERING_MAP.keys()))
+        raise ValueError(f"Unsupported ordering '{ordering}'. Allowed fields: {allowed}")
+
     qs = Claim.objects.filter(is_deleted=False).select_related("user", "analysis")
     search_q = _build_claim_search_q(search)
     if search_q:
@@ -150,7 +160,7 @@ def list_all_claims_for_admin(
         date_to=date_to,
         user_id=user_id,
     )
-    return qs.order_by("-submitted_at", "-id")
+    return qs.order_by(*order_fields)
 
 
 def get_user_claim_history(

@@ -1570,3 +1570,206 @@ class ClaimApiTests(TestCase):
             self.assertIsNotNone(data["next"], f"Expected next link for url: {url}")
             self.assertNotIn("status", data["next"], f"status should be omitted from next link for url: {url}")
             self.assertNotIn("verdict", data["next"], f"verdict should be omitted from next link for url: {url}")
+
+    # API-016: Administrative Ordering Integration Tests
+    def test_admin_claims_sorting_created_at_api(self):
+        t_base = datetime(2026, 7, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
+        c1 = Claim.objects.create(user=self.user, text="Admin timestamp test alpha")
+        c2 = Claim.objects.create(user=self.other_user, text="Admin timestamp test beta")
+        Claim.objects.filter(id=c1.id).update(submitted_at=t_base)
+        Claim.objects.filter(id=c2.id).update(submitted_at=t_base + timedelta(hours=2))
+
+        # Descending (newest first)
+        resp_desc = self.client.get("/api/v1/admin/claims?ordering=-created_at", **self.admin_headers)
+        self.assertEqual(resp_desc.status_code, 200)
+        results_desc = resp_desc.json()["results"]
+        ids_desc = [r["claim_id"] for r in results_desc]
+        self.assertLess(ids_desc.index(str(c2.id)), ids_desc.index(str(c1.id)))
+
+        # Ascending (oldest first)
+        resp_asc = self.client.get("/api/v1/admin/claims?ordering=created_at", **self.admin_headers)
+        self.assertEqual(resp_asc.status_code, 200)
+        results_asc = resp_asc.json()["results"]
+        ids_asc = [r["claim_id"] for r in results_asc]
+        self.assertLess(ids_asc.index(str(c1.id)), ids_asc.index(str(c2.id)))
+
+    def test_admin_claims_sorting_credibility_score_nulls_last_api(self):
+        t_base = datetime(2026, 7, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
+        c_low = Claim.objects.create(user=self.user, text="API explicit score test low 15.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_low, credibility_score=15.0, verdict=Verdict.MISINFORMATION)
+        Claim.objects.filter(id=c_low.id).update(submitted_at=t_base)
+
+        c_high = Claim.objects.create(user=self.other_user, text="API explicit score test high 85.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_high, credibility_score=85.0, verdict=Verdict.CREDIBLE)
+        Claim.objects.filter(id=c_high.id).update(submitted_at=t_base + timedelta(minutes=1))
+
+        c_null_score = Claim.objects.create(user=self.user, text="API explicit score test null score", status=ClaimStatus.PROCESSING)
+        Analysis.objects.create(claim=c_null_score, credibility_score=None)
+        Claim.objects.filter(id=c_null_score.id).update(submitted_at=t_base + timedelta(minutes=2))
+
+        c_no_analysis = Claim.objects.create(user=self.other_user, text="API explicit score test no analysis", status=ClaimStatus.PENDING)
+        Claim.objects.filter(id=c_no_analysis.id).update(submitted_at=t_base + timedelta(minutes=3))
+
+        # Ascending: 15.0 -> 85.0 -> null scores last (ordered by secondary sort submitted_at asc)
+        resp_asc = self.client.get("/api/v1/admin/claims?search=API explicit score test&ordering=credibility_score", **self.admin_headers)
+        self.assertEqual(resp_asc.status_code, 200)
+        items_asc = resp_asc.json()["results"]
+        ids_asc = [r["claim_id"] for r in items_asc]
+        self.assertEqual(ids_asc, [str(c_low.id), str(c_high.id), str(c_null_score.id), str(c_no_analysis.id)])
+
+        # Descending: 85.0 -> 15.0 -> null scores last (ordered by secondary sort -submitted_at desc)
+        resp_desc = self.client.get("/api/v1/admin/claims?search=API explicit score test&ordering=-credibility_score", **self.admin_headers)
+        self.assertEqual(resp_desc.status_code, 200)
+        items_desc = resp_desc.json()["results"]
+        ids_desc = [r["claim_id"] for r in items_desc]
+        self.assertEqual(ids_desc, [str(c_high.id), str(c_low.id), str(c_no_analysis.id), str(c_null_score.id)])
+
+    def test_admin_claims_sorting_status_api(self):
+        c_completed = Claim.objects.create(user=self.user, text="Admin completed claim status test", status=ClaimStatus.COMPLETED)
+        c_pending = Claim.objects.create(user=self.other_user, text="Admin pending claim status test", status=ClaimStatus.PENDING)
+
+        resp_asc = self.client.get("/api/v1/admin/claims?ordering=status", **self.admin_headers)
+        self.assertEqual(resp_asc.status_code, 200)
+        ids_asc = [r["claim_id"] for r in resp_asc.json()["results"]]
+        self.assertLess(ids_asc.index(str(c_completed.id)), ids_asc.index(str(c_pending.id)))
+
+        resp_desc = self.client.get("/api/v1/admin/claims?ordering=-status", **self.admin_headers)
+        self.assertEqual(resp_desc.status_code, 200)
+        ids_desc = [r["claim_id"] for r in resp_desc.json()["results"]]
+        self.assertLess(ids_desc.index(str(c_pending.id)), ids_desc.index(str(c_completed.id)))
+
+    def test_admin_claims_sorting_invalid_rejected_422(self):
+        resp = self.client.get("/api/v1/admin/claims?ordering=disallowed_column", **self.admin_headers)
+        self.assertEqual(resp.status_code, 422)
+        data = resp.json()
+        self.assertEqual(data["error_code"], "VALIDATION_ERROR")
+        self.assertIn("Invalid ordering 'disallowed_column'", data["message"])
+
+    def test_admin_claims_default_ordering_when_omitted(self):
+        t_now = datetime.now(dt_timezone.utc)
+        c_brand_new = Claim.objects.create(user=self.user, text="Admin default order brand new claim")
+        Claim.objects.filter(id=c_brand_new.id).update(submitted_at=t_now + timedelta(hours=5))
+
+        resp = self.client.get("/api/v1/admin/claims?page=1&page_size=1", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["results"][0]["claim_id"], str(c_brand_new.id))
+        self.assertIsNotNone(data["next"])
+        self.assertNotIn("ordering", data["next"])
+
+    def test_admin_claims_deterministic_pagination_tied_values(self):
+        claims = []
+        for i in range(4):
+            c = Claim.objects.create(
+                user=self.user,
+                text=f"Admin tied pending item {i+1} unique pagination tag",
+                status=ClaimStatus.PENDING,
+            )
+            claims.append(c)
+
+        url_p1 = "/api/v1/admin/claims?search=unique pagination tag&page=1&page_size=2&ordering=status"
+        resp_p1 = self.client.get(url_p1, **self.admin_headers)
+        self.assertEqual(resp_p1.status_code, 200)
+        ids_p1 = [r["claim_id"] for r in resp_p1.json()["results"]]
+        self.assertEqual(len(ids_p1), 2)
+
+        url_p2 = "/api/v1/admin/claims?search=unique pagination tag&page=2&page_size=2&ordering=status"
+        resp_p2 = self.client.get(url_p2, **self.admin_headers)
+        self.assertEqual(resp_p2.status_code, 200)
+        ids_p2 = [r["claim_id"] for r in resp_p2.json()["results"]]
+        self.assertEqual(len(ids_p2), 2)
+
+        # 1. Page 1 and page 2 contain no duplicate IDs
+        self.assertEqual(len(set(ids_p1).intersection(set(ids_p2))), 0)
+
+        # 2. The union of IDs across both pages exactly equals the IDs of all four seeded claims
+        expected_ids = {str(c.id) for c in claims}
+        combined_ids = set(ids_p1).union(set(ids_p2))
+        self.assertEqual(combined_ids, expected_ids)
+
+        # 3. No seeded claim is omitted
+        self.assertEqual(len(combined_ids), 4)
+        for c in claims:
+            self.assertIn(str(c.id), combined_ids)
+
+    def test_admin_claims_pagination_preserves_ordering_search_and_all_filters(self):
+        dt_fixed = datetime(2026, 7, 2, 12, 0, 0, tzinfo=dt_timezone.utc)
+        created_claims = []
+        for i in range(3):
+            c = Claim.objects.create(
+                user=self.user,
+                text=f"Wind turbine energy efficiency study section {i+1} text",
+                status=ClaimStatus.COMPLETED,
+            )
+            Claim.objects.filter(id=c.id).update(submitted_at=dt_fixed - timedelta(minutes=i * 10))
+            Analysis.objects.create(claim=c, verdict=Verdict.CREDIBLE, credibility_score=90.0 - i * 5)
+            created_claims.append(c)
+
+        url = (
+            "/api/v1/admin/claims?"
+            f"page=1&page_size=2&"
+            f"ordering=-credibility_score&"
+            f"search=turbine&"
+            f"status=COMPLETED&"
+            f"verdict=CREDIBLE&"
+            f"date_from=2026-07-01&"
+            f"date_to=2026-07-03&"
+            f"user_id={self.user.id}"
+        )
+        resp = self.client.get(url, **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["count"], 3)
+        self.assertEqual(len(data["results"]), 2)
+
+        next_url = data["next"]
+        self.assertIsNotNone(next_url)
+        self.assertIn("page=2", next_url)
+        self.assertIn("page_size=2", next_url)
+        self.assertIn("ordering=-credibility_score", next_url)
+        self.assertIn("search=turbine", next_url)
+        self.assertIn("status=COMPLETED", next_url)
+        self.assertIn("verdict=CREDIBLE", next_url)
+        self.assertIn("date_from=2026-07-01", next_url)
+        self.assertIn("date_to=2026-07-03", next_url)
+        self.assertIn(f"user_id={self.user.id}", next_url)
+
+        # Follow page 2
+        resp2 = self.client.get(next_url, **self.admin_headers)
+        self.assertEqual(resp2.status_code, 200)
+        data2 = resp2.json()
+        self.assertEqual(len(data2["results"]), 1)
+
+        prev_url = data2["previous"]
+        self.assertIsNotNone(prev_url)
+        self.assertIn("page=1", prev_url)
+        self.assertIn("ordering=-credibility_score", prev_url)
+        self.assertIn("search=turbine", prev_url)
+        self.assertIn("status=COMPLETED", prev_url)
+        self.assertIn("verdict=CREDIBLE", prev_url)
+        self.assertIn("date_from=2026-07-01", prev_url)
+        self.assertIn("date_to=2026-07-03", prev_url)
+        self.assertIn(f"user_id={self.user.id}", prev_url)
+
+    def test_admin_claims_ordering_authorization(self):
+        resp_user = self.client.get("/api/v1/admin/claims?ordering=-created_at", **self.headers)
+        self.assertEqual(resp_user.status_code, 403)
+        self.assertEqual(resp_user.json()["error_code"], "PERMISSION_DENIED")
+
+        resp_unauth = self.client.get("/api/v1/admin/claims?ordering=-created_at")
+        self.assertEqual(resp_unauth.status_code, 401)
+        self.assertEqual(resp_unauth.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_admin_claims_ordering_soft_deleted_excluded(self):
+        c_deleted = Claim.objects.create(
+            user=self.user,
+            text="Soft-deleted claim text for admin ordering check",
+            status=ClaimStatus.COMPLETED,
+            is_deleted=True,
+        )
+        Analysis.objects.create(claim=c_deleted, credibility_score=99.0, verdict=Verdict.CREDIBLE)
+
+        resp = self.client.get("/api/v1/admin/claims?ordering=-credibility_score", **self.admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        returned_ids = {r["claim_id"] for r in resp.json()["results"]}
+        self.assertNotIn(str(c_deleted.id), returned_ids)

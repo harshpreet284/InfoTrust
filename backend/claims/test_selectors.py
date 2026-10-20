@@ -626,3 +626,149 @@ class ClaimSelectorTests(TestCase):
             for claim in qs:
                 _ = claim.user.full_name
                 _ = claim.analysis.verdict
+
+    # API-016: Administrative Ordering Tests
+    def test_ordering_keys_synchronized_between_schema_and_selector(self):
+        from claims.schemas import ALLOWED_CLAIM_ORDERING_FIELDS
+        from claims.selectors import ORDERING_MAP
+        self.assertEqual(ALLOWED_CLAIM_ORDERING_FIELDS, set(ORDERING_MAP.keys()))
+
+    def test_admin_claims_sorting_created_at_asc_and_desc(self):
+        t_base = datetime(2026, 7, 1, 12, 0, 0, tzinfo=dt_timezone.utc)
+        Claim.objects.filter(id=self.claim1.id).update(submitted_at=t_base)
+        Claim.objects.filter(id=self.claim2.id).update(submitted_at=t_base + timedelta(hours=1))
+
+        qs_desc = list_all_claims_for_admin(ordering="-created_at")
+        ids_desc = [c.id for c in qs_desc]
+        self.assertLess(ids_desc.index(self.claim2.id), ids_desc.index(self.claim1.id))
+
+        qs_asc = list_all_claims_for_admin(ordering="created_at")
+        ids_asc = [c.id for c in qs_asc]
+        self.assertLess(ids_asc.index(self.claim1.id), ids_asc.index(self.claim2.id))
+
+    def test_admin_claims_sorting_credibility_score_asc_nulls_last(self):
+        t_base = datetime(2026, 7, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
+        c_low = Claim.objects.create(user=self.owner, text="Score asc query test low 15.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_low, credibility_score=15.0)
+        Claim.objects.filter(id=c_low.id).update(submitted_at=t_base)
+
+        c_high = Claim.objects.create(user=self.other_user, text="Score asc query test high 85.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_high, credibility_score=85.0)
+        Claim.objects.filter(id=c_high.id).update(submitted_at=t_base + timedelta(minutes=1))
+
+        c_null_score = Claim.objects.create(user=self.owner, text="Score asc query test null score", status=ClaimStatus.PROCESSING)
+        Analysis.objects.create(claim=c_null_score, credibility_score=None)
+        Claim.objects.filter(id=c_null_score.id).update(submitted_at=t_base + timedelta(minutes=2))
+
+        c_no_analysis = Claim.objects.create(user=self.other_user, text="Score asc query test no analysis", status=ClaimStatus.PENDING)
+        Claim.objects.filter(id=c_no_analysis.id).update(submitted_at=t_base + timedelta(minutes=3))
+
+        qs = list_all_claims_for_admin(search="Score asc query test", ordering="credibility_score")
+        results = list(qs)
+        self.assertEqual([c.id for c in results], [c_low.id, c_high.id, c_null_score.id, c_no_analysis.id])
+
+    def test_admin_claims_sorting_credibility_score_desc_nulls_last(self):
+        t_base = datetime(2026, 7, 1, 10, 0, 0, tzinfo=dt_timezone.utc)
+        c_low = Claim.objects.create(user=self.owner, text="Score desc query test low 15.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_low, credibility_score=15.0)
+        Claim.objects.filter(id=c_low.id).update(submitted_at=t_base)
+
+        c_high = Claim.objects.create(user=self.other_user, text="Score desc query test high 85.0", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c_high, credibility_score=85.0)
+        Claim.objects.filter(id=c_high.id).update(submitted_at=t_base + timedelta(minutes=1))
+
+        c_null_score = Claim.objects.create(user=self.owner, text="Score desc query test null score", status=ClaimStatus.PROCESSING)
+        Analysis.objects.create(claim=c_null_score, credibility_score=None)
+        Claim.objects.filter(id=c_null_score.id).update(submitted_at=t_base + timedelta(minutes=2))
+
+        c_no_analysis = Claim.objects.create(user=self.other_user, text="Score desc query test no analysis", status=ClaimStatus.PENDING)
+        Claim.objects.filter(id=c_no_analysis.id).update(submitted_at=t_base + timedelta(minutes=3))
+
+        qs = list_all_claims_for_admin(search="Score desc query test", ordering="-credibility_score")
+        results = list(qs)
+        self.assertEqual([c.id for c in results], [c_high.id, c_low.id, c_no_analysis.id, c_null_score.id])
+
+    def test_admin_claims_sorting_status_asc_and_desc(self):
+        c_completed = Claim.objects.create(user=self.owner, text="Admin completed claim text", status=ClaimStatus.COMPLETED)
+
+        qs_asc = list_all_claims_for_admin(ordering="status")
+        self.assertEqual(qs_asc.first().status, ClaimStatus.COMPLETED)
+
+        qs_desc = list_all_claims_for_admin(ordering="-status")
+        self.assertEqual(qs_desc.first().status, ClaimStatus.PENDING)
+
+    def test_admin_claims_default_ordering_newest_first(self):
+        t_now = timezone.now()
+        c_brand_new = Claim.objects.create(user=self.owner, text="Brand newest claim text for default order")
+        Claim.objects.filter(id=c_brand_new.id).update(submitted_at=t_now + timedelta(hours=5))
+
+        qs_default = list_all_claims_for_admin(ordering=None)
+        self.assertEqual(qs_default.first().id, c_brand_new.id)
+
+    def test_admin_claims_unsupported_ordering_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            list_all_claims_for_admin(ordering="unsupported_column")
+        self.assertIn("Unsupported ordering 'unsupported_column'", str(ctx.exception))
+
+    def test_admin_claims_ordering_deterministic_tie_breaker(self):
+        t_same = datetime(2026, 7, 1, 12, 0, 0, tzinfo=dt_timezone.utc)
+        c_a = Claim.objects.create(user=self.owner, text="Tied deterministic claim A", status=ClaimStatus.PENDING)
+        c_b = Claim.objects.create(user=self.owner, text="Tied deterministic claim B", status=ClaimStatus.PENDING)
+        Claim.objects.filter(id__in=[c_a.id, c_b.id]).update(submitted_at=t_same)
+
+        c_higher_id, c_lower_id = (c_a, c_b) if c_a.id > c_b.id else (c_b, c_a)
+
+        # 1. Under "status", tuple is ("status", "-submitted_at", "-id") -> tie-breaker is -id (descending)
+        qs_status = list_all_claims_for_admin(search="Tied deterministic claim", ordering="status")
+        ids_status = [c.id for c in qs_status]
+        self.assertEqual(ids_status, [c_higher_id.id, c_lower_id.id])
+
+        # 2. Under "created_at" with identical submitted_at, tuple is ("submitted_at", "id") -> tie-breaker is +id (ascending)
+        qs_created = list_all_claims_for_admin(search="Tied deterministic claim", ordering="created_at")
+        ids_created = [c.id for c in qs_created]
+        self.assertEqual(ids_created, [c_lower_id.id, c_higher_id.id])
+
+    def test_admin_claims_ordering_combined_with_filters_and_search(self):
+        c1 = Claim.objects.create(user=self.owner, text="Filtered solar energy report alpha", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c1, credibility_score=95.0, verdict=Verdict.CREDIBLE)
+
+        c2 = Claim.objects.create(user=self.owner, text="Filtered solar energy report beta", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c2, credibility_score=60.0, verdict=Verdict.CREDIBLE)
+
+        qs = list_all_claims_for_admin(
+            search="solar",
+            status="COMPLETED",
+            verdict="CREDIBLE",
+            user_id=self.owner.id,
+            ordering="-credibility_score",
+        )
+        results = list(qs)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].id, c1.id)
+        self.assertEqual(results[1].id, c2.id)
+
+    def test_admin_claims_ordering_excludes_soft_deleted(self):
+        c_deleted = Claim.objects.create(
+            user=self.owner,
+            text="Deleted claim should never appear in admin order",
+            status=ClaimStatus.COMPLETED,
+            is_deleted=True,
+        )
+        Analysis.objects.create(claim=c_deleted, credibility_score=99.0)
+
+        for order_key in ["created_at", "-created_at", "credibility_score", "-credibility_score", "status", "-status"]:
+            qs = list_all_claims_for_admin(ordering=order_key)
+            ids = [c.id for c in qs]
+            self.assertNotIn(c_deleted.id, ids)
+
+    def test_admin_claims_ordering_select_related_efficiency(self):
+        c = Claim.objects.create(user=self.owner, text="Admin efficiency test claim", status=ClaimStatus.COMPLETED)
+        Analysis.objects.create(claim=c, credibility_score=85.0, verdict=Verdict.CREDIBLE)
+
+        qs = list_all_claims_for_admin(ordering="-credibility_score")
+        with self.assertNumQueries(1):
+            results = list(qs)
+            for item in results:
+                _ = item.user.full_name
+                if hasattr(item, "analysis") and item.analysis is not None:
+                    _ = item.analysis.credibility_score

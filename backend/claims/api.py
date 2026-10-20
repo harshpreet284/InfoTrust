@@ -166,10 +166,13 @@ def list_admin_claims_endpoint(request, filters: Query[AdminClaimFilterSchema]):
         date_from=filters.date_from,
         date_to=filters.date_to,
         user_id=filters.user_id,
+        ordering=filters.ordering,
     )
     normalized_search = filters.search.strip() if filters.search and filters.search.strip() else None
 
     extra_params: Dict[str, Any] = {}
+    if filters.ordering:
+        extra_params["ordering"] = filters.ordering
     if normalized_search:
         extra_params["search"] = normalized_search
     if filters.status:
