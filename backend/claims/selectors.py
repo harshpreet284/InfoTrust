@@ -5,6 +5,7 @@ from django.db.models import F, Q, QuerySet
 from ninja.errors import AuthorizationError
 from authentication.models import User
 from claims.models import Claim
+from claims.permissions import is_admin_user
 
 
 ORDERING_MAP = {
@@ -54,7 +55,7 @@ def get_claim(claim_id: uuid.UUID, user: User) -> Claim:
     qs = Claim.objects.filter(id=claim_id, is_deleted=False)
     
     claim = qs.get()
-    if not user.is_superuser and claim.user_id != user.id:
+    if not is_admin_user(user) and claim.user_id != user.id:
         raise AuthorizationError("You do not have permission to view this claim.")
         
     return claim

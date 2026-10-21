@@ -1,12 +1,10 @@
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 import uuid
-from django.http import HttpRequest
 from ninja import Query, Router
-from ninja.errors import HttpError
-from ninja_jwt.authentication import JWTAuth
 
 from authentication.permissions import RoleAuth
+from claims.permissions import AdminEndpointAuth
 from shared.pagination import PaginationParamsSchema, paginate_queryset
 from claims.schemas import (
     AdminClaimFilterSchema,
@@ -138,20 +136,6 @@ def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSche
 def delete_existing_claim(request, claim_id: uuid.UUID):
     delete_claim(claim_id=claim_id, user=request.user)
     return 204, None
-
-
-class AdminEndpointAuth(JWTAuth):
-    """
-    Endpoint-specific authorization for administrative endpoints.
-    Allows application admins (role == 'ADMIN') and Django superusers (is_superuser == True).
-    Rejects normal users with HTTP 403 PERMISSION_DENIED.
-    """
-    def authenticate(self, request: HttpRequest, token: str):
-        user = super().authenticate(request, token)
-        is_admin = getattr(user, "role", None) == "ADMIN" or getattr(user, "is_superuser", False)
-        if user and not is_admin:
-            raise HttpError(403, "You do not have permission to perform this action.")
-        return user
 
 
 admin_router = Router(tags=["Admin"])

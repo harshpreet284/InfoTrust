@@ -60,6 +60,11 @@ class ClaimSelectorTests(TestCase):
         retrieved = get_claim(self.claim1.id, self.admin)
         self.assertEqual(retrieved.id, self.claim1.id)
 
+    def test_get_claim_app_admin_success(self):
+        app_admin = User.objects.create_user(email="app_admin@example.com", password="pwd", full_name="App Admin", role="ADMIN")
+        retrieved = get_claim(self.claim1.id, app_admin)
+        self.assertEqual(retrieved.id, self.claim1.id)
+
     def test_get_claim_non_owner_raises_authorization_error(self):
         from ninja.errors import AuthorizationError
         with self.assertRaises(AuthorizationError):

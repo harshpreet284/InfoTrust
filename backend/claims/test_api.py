@@ -1773,3 +1773,42 @@ class ClaimApiTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         returned_ids = {r["claim_id"] for r in resp.json()["results"]}
         self.assertNotIn(str(c_deleted.id), returned_ids)
+
+    # API-017: Permission Integration Tests
+    def test_get_claim_app_admin_success(self):
+        resp = self.client.get(f"/api/v1/claims/{self.claim.id}", **self.app_admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["data"]["id"], str(self.claim.id))
+
+    def test_protected_endpoints_invalid_token_rejected(self):
+        bad_headers = {"HTTP_AUTHORIZATION": "Bearer invalid.jwt.token"}
+        resp_history = self.client.get("/api/v1/claims/history", **bad_headers)
+        self.assertEqual(resp_history.status_code, 401)
+        self.assertEqual(resp_history.json()["error_code"], "AUTHENTICATION_ERROR")
+
+        resp_detail = self.client.get(f"/api/v1/claims/{self.claim.id}", **bad_headers)
+        self.assertEqual(resp_detail.status_code, 401)
+        self.assertEqual(resp_detail.json()["error_code"], "AUTHENTICATION_ERROR")
+
+    def test_app_admin_can_update_own_pending_claim(self):
+        admin_claim = Claim.objects.create(
+            user=self.app_admin,
+            text="App admin original pending claim text that is long enough.",
+            status=ClaimStatus.PENDING,
+        )
+        payload = json.dumps({"claim_text": "App admin updated pending claim text."})
+        resp = self.client.patch(f"/api/v1/claims/{admin_claim.id}", data=payload, content_type="application/json", **self.app_admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["success"])
+        admin_claim.refresh_from_db()
+        self.assertEqual(admin_claim.text, "App admin updated pending claim text.")
+
+    def test_app_admin_can_list_admin_claims(self):
+        resp = self.client.get("/api/v1/admin/claims", **self.app_admin_headers)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("results", data)
+        self.assertIn("count", data)
