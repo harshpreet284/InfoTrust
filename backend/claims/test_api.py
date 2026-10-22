@@ -3,6 +3,7 @@ import json
 from django.test import TestCase, Client
 
 from authentication.models import User
+from audit.models import AuditLog
 from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
 from analysis.models import Analysis, Verdict
 
@@ -1812,3 +1813,129 @@ class ClaimApiTests(TestCase):
         data = resp.json()
         self.assertIn("results", data)
         self.assertIn("count", data)
+
+    def test_submit_claim_endpoint_creates_audit_log(self):
+        payload = json.dumps({"claim_text": "Valid submission text for testing audit logging via API."})
+        resp = self.client.post("/api/v1/claims", data=payload, content_type="application/json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+        claim_id = data["data"]["id"]
+
+        log = AuditLog.objects.get(target=claim_id, action="CLAIM_SUBMITTED")
+        self.assertEqual(log.user, self.user)
+        self.assertEqual(log.metadata["claim_id"], claim_id)
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+
+    def test_patch_claim_endpoint_creates_audit_log(self):
+        payload = json.dumps({"claim_text": "Valid updated claim text via endpoint."})
+        resp = self.client.patch(f"/api/v1/claims/{self.claim.id}", data=payload, content_type="application/json", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+
+        log = AuditLog.objects.get(target=str(self.claim.id), action="CLAIM_UPDATED")
+        self.assertEqual(log.user, self.user)
+        self.assertEqual(log.metadata["claim_id"], str(self.claim.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+
+    def test_delete_claim_endpoint_creates_audit_log(self):
+        claim_to_delete = Claim.objects.create(
+            user=self.user,
+            text="Claim created for testing delete endpoint audit.",
+            status=ClaimStatus.PENDING,
+            is_deleted=False,
+        )
+        resp = self.client.delete(f"/api/v1/claims/{claim_to_delete.id}", **self.headers)
+        self.assertEqual(resp.status_code, 204)
+
+        log = AuditLog.objects.get(target=str(claim_to_delete.id), action="CLAIM_DELETED")
+        self.assertEqual(log.user, self.user)
+        self.assertEqual(log.metadata["claim_id"], str(claim_to_delete.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+        self.assertEqual(log.metadata["deleted_by_role"], "USER")
+        self.assertFalse(log.metadata["is_admin_action"])
+        self.assertTrue(log.metadata["soft_deleted"])
+
+    def test_api_unauthenticated_requests_do_not_create_audit_logs(self):
+        initial_count = AuditLog.objects.count()
+
+        # POST unauthenticated -> 401
+        resp_post = self.client.post("/api/v1/claims", data=json.dumps({"claim_text": "Valid text that is long enough."}), content_type="application/json")
+        self.assertEqual(resp_post.status_code, 401)
+
+        # PATCH unauthenticated -> 401
+        resp_patch = self.client.patch(f"/api/v1/claims/{self.claim.id}", data=json.dumps({"claim_text": "Valid text that is long enough."}), content_type="application/json")
+        self.assertEqual(resp_patch.status_code, 401)
+
+        # DELETE unauthenticated -> 401
+        resp_delete = self.client.delete(f"/api/v1/claims/{self.claim.id}")
+        self.assertEqual(resp_delete.status_code, 401)
+
+        self.assertEqual(AuditLog.objects.count(), initial_count)
+
+    def test_api_forbidden_requests_do_not_create_audit_logs(self):
+        initial_count = AuditLog.objects.count()
+
+        # PATCH by non-owner -> 403
+        resp_patch = self.client.patch(f"/api/v1/claims/{self.claim.id}", data=json.dumps({"claim_text": "Non-owner attempt text."}), content_type="application/json", **self.other_headers)
+        self.assertEqual(resp_patch.status_code, 403)
+
+        # DELETE by non-owner non-admin -> 403
+        resp_delete = self.client.delete(f"/api/v1/claims/{self.claim.id}", **self.other_headers)
+        self.assertEqual(resp_delete.status_code, 403)
+
+        self.assertEqual(AuditLog.objects.count(), initial_count)
+
+    def test_api_not_found_requests_do_not_create_audit_logs(self):
+        import uuid
+        initial_count = AuditLog.objects.count()
+        random_id = uuid.uuid4()
+
+        # PATCH non-existent -> 404
+        resp_patch_missing = self.client.patch(f"/api/v1/claims/{random_id}", data=json.dumps({"claim_text": "Non-existent claim update text."}), content_type="application/json", **self.headers)
+        self.assertEqual(resp_patch_missing.status_code, 404)
+
+        # DELETE non-existent -> 404
+        resp_delete_missing = self.client.delete(f"/api/v1/claims/{random_id}", **self.headers)
+        self.assertEqual(resp_delete_missing.status_code, 404)
+
+        # Soft-deleted claim
+        soft_deleted_claim = Claim.objects.create(user=self.user, text="Already soft-deleted claim text.", is_deleted=True)
+        resp_patch_deleted = self.client.patch(f"/api/v1/claims/{soft_deleted_claim.id}", data=json.dumps({"claim_text": "Soft-deleted claim update text."}), content_type="application/json", **self.headers)
+        self.assertEqual(resp_patch_deleted.status_code, 404)
+
+        resp_delete_deleted = self.client.delete(f"/api/v1/claims/{soft_deleted_claim.id}", **self.headers)
+        self.assertEqual(resp_delete_deleted.status_code, 404)
+
+        self.assertEqual(AuditLog.objects.count(), initial_count)
+
+    def test_api_conflict_requests_do_not_create_audit_logs(self):
+        initial_count = AuditLog.objects.count()
+
+        analyzed_claim = Claim.objects.create(
+            user=self.user,
+            text="Analyzed claim text for testing conflict.",
+            status=ClaimStatus.PROCESSING,
+            is_deleted=False,
+        )
+
+        # PATCH analyzed -> 409
+        resp_patch = self.client.patch(f"/api/v1/claims/{analyzed_claim.id}", data=json.dumps({"claim_text": "Attempt to update analyzed claim."}), content_type="application/json", **self.headers)
+        self.assertEqual(resp_patch.status_code, 409)
+
+        # DELETE analyzed by owner -> 409
+        resp_delete = self.client.delete(f"/api/v1/claims/{analyzed_claim.id}", **self.headers)
+        self.assertEqual(resp_delete.status_code, 409)
+
+        self.assertEqual(AuditLog.objects.count(), initial_count)
+
+    def test_api_validation_error_requests_do_not_create_audit_logs(self):
+        initial_count = AuditLog.objects.count()
+
+        # POST invalid (too short) -> 422
+        resp_post = self.client.post("/api/v1/claims", data=json.dumps({"claim_text": "Short"}), content_type="application/json", **self.headers)
+        self.assertEqual(resp_post.status_code, 422)
+
+        # PATCH invalid (empty/whitespace) -> 422
+        resp_patch = self.client.patch(f"/api/v1/claims/{self.claim.id}", data=json.dumps({"claim_text": "   "}), content_type="application/json", **self.headers)
+        self.assertEqual(resp_patch.status_code, 422)
+
+        self.assertEqual(AuditLog.objects.count(), initial_count)

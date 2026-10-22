@@ -1,8 +1,10 @@
 import uuid
+from unittest.mock import patch
 from django.test import TestCase
 from django.http import Http404
 from ninja.errors import AuthorizationError, HttpError
 
+from audit.models import AuditLog
 from authentication.models import User
 from claims.models import Claim, ClaimStatus, ClaimFeedback, FeedbackType
 from claims.schemas import ClaimCreateSchema, ClaimUpdateSchema
@@ -359,3 +361,170 @@ class ClaimServiceTests(TestCase):
                 delete_claim(self.claim.id, self.owner)
             self.assertEqual(ctx.exception.status_code, 409)
             self.assertEqual(str(ctx.exception), "Claim delete conflict. The claim could not be updated.")
+
+    def test_submit_claim_creates_audit_log(self):
+        payload = ClaimCreateSchema(claim_text="This is a test claim text for audit logging.")
+        claim = submit_claim(self.owner, payload)
+        self.assertEqual(AuditLog.objects.filter(target=str(claim.id)).count(), 1)
+        log = AuditLog.objects.get(target=str(claim.id))
+        self.assertEqual(log.action, "CLAIM_SUBMITTED")
+        self.assertEqual(log.user, self.owner)
+        self.assertEqual(log.metadata["claim_id"], str(claim.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+        self.assertEqual(log.metadata["text_length"], len(payload.claim_text))
+
+    def test_update_claim_creates_audit_log(self):
+        payload = ClaimUpdateSchema(claim_text="Updated text that meets the length requirements.")
+        updated = update_claim(self.claim.id, self.owner, payload)
+        log = AuditLog.objects.get(target=str(self.claim.id), action="CLAIM_UPDATED")
+        self.assertEqual(log.user, self.owner)
+        self.assertEqual(log.metadata["claim_id"], str(self.claim.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+        self.assertEqual(log.metadata["text_length"], len(payload.claim_text))
+
+    def test_delete_claim_owner_creates_audit_log(self):
+        delete_claim(self.claim.id, self.owner)
+        log = AuditLog.objects.get(target=str(self.claim.id), action="CLAIM_DELETED")
+        self.assertEqual(log.user, self.owner)
+        self.assertEqual(log.metadata["claim_id"], str(self.claim.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+        self.assertEqual(log.metadata["deleted_by_role"], "USER")
+        self.assertFalse(log.metadata["is_admin_action"])
+        self.assertTrue(log.metadata["soft_deleted"])
+
+    def test_delete_claim_admin_creates_audit_log(self):
+        delete_claim(self.claim.id, self.admin)
+        log = AuditLog.objects.get(target=str(self.claim.id), action="CLAIM_DELETED")
+        self.assertEqual(log.user, self.admin)
+        self.assertEqual(log.metadata["claim_id"], str(self.claim.id))
+        self.assertEqual(log.metadata["status"], ClaimStatus.PENDING)
+        self.assertEqual(log.metadata["deleted_by_role"], "ADMIN")
+        self.assertTrue(log.metadata["is_admin_action"])
+        self.assertTrue(log.metadata["soft_deleted"])
+
+    def test_delete_claim_admin_completed_status_audit(self):
+        completed_claim = Claim.objects.create(
+            user=self.owner,
+            text="Completed claim text that is sufficiently long.",
+            status=ClaimStatus.COMPLETED,
+            is_deleted=False,
+        )
+        delete_claim(completed_claim.id, self.app_admin)
+        log = AuditLog.objects.get(target=str(completed_claim.id), action="CLAIM_DELETED")
+        self.assertEqual(log.user, self.app_admin)
+        self.assertEqual(log.metadata["status"], ClaimStatus.COMPLETED)
+        self.assertEqual(log.metadata["deleted_by_role"], "ADMIN")
+        self.assertTrue(log.metadata["is_admin_action"])
+
+    def test_delete_claim_admin_concurrent_status_transition_simulation(self):
+        from django.db.models import QuerySet
+
+        self.assertEqual(self.claim.status, ClaimStatus.PENDING)
+        original_update = QuerySet.update
+        interception_done = False
+
+        def side_effect(qs, *args, **kwargs):
+            nonlocal interception_done
+            if not interception_done and self._is_conditional_claim_delete(qs, kwargs):
+                interception_done = True
+                original_update(Claim.objects.filter(id=self.claim.id), status=ClaimStatus.PROCESSING)
+            return original_update(qs, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", autospec=True, side_effect=side_effect):
+            delete_claim(self.claim.id, self.admin)
+
+        self.claim.refresh_from_db()
+        self.assertTrue(self.claim.is_deleted)
+        self.assertEqual(self.claim.status, ClaimStatus.PROCESSING)
+
+        audit_log = AuditLog.objects.get(action="CLAIM_DELETED", target=str(self.claim.id))
+        self.assertEqual(audit_log.metadata["status"], ClaimStatus.PROCESSING)
+        self.assertEqual(audit_log.metadata["deleted_by_role"], "ADMIN")
+        self.assertTrue(audit_log.metadata["is_admin_action"])
+
+    def test_soft_delete_preserves_claim_and_audit_history(self):
+        payload_create = ClaimCreateSchema(claim_text="Initial claim text for full audit lifecycle.")
+        claim = submit_claim(self.owner, payload_create)
+
+        payload_update = ClaimUpdateSchema(claim_text="Updated claim text for full audit lifecycle.")
+        update_claim(claim.id, self.owner, payload_update)
+
+        delete_claim(claim.id, self.owner)
+
+        claim.refresh_from_db()
+        self.assertTrue(claim.is_deleted)
+
+        logs = list(AuditLog.objects.filter(target=str(claim.id)).order_by("timestamp"))
+        self.assertEqual(len(logs), 3)
+        self.assertEqual(logs[0].action, "CLAIM_SUBMITTED")
+        self.assertEqual(logs[1].action, "CLAIM_UPDATED")
+        self.assertEqual(logs[2].action, "CLAIM_DELETED")
+
+    def test_submit_claim_rollback_on_audit_failure(self):
+        payload = ClaimCreateSchema(claim_text="Text for claim that should be rolled back.")
+        initial_claim_count = Claim.objects.count()
+        initial_audit_count = AuditLog.objects.count()
+
+        with patch("claims.services.log_audit_event", side_effect=RuntimeError("Simulated audit failure")):
+            with self.assertRaises(RuntimeError):
+                submit_claim(self.owner, payload)
+
+        self.assertEqual(Claim.objects.count(), initial_claim_count)
+        self.assertFalse(Claim.objects.filter(text=payload.claim_text).exists())
+        self.assertEqual(AuditLog.objects.count(), initial_audit_count)
+
+    def test_update_claim_rollback_on_audit_failure(self):
+        original_text = self.claim.text
+        payload = ClaimUpdateSchema(claim_text="Updated text that should be rolled back.")
+        initial_audit_count = AuditLog.objects.count()
+
+        with patch("claims.services.log_audit_event", side_effect=RuntimeError("Simulated audit failure")):
+            with self.assertRaises(RuntimeError):
+                update_claim(self.claim.id, self.owner, payload)
+
+        self.claim.refresh_from_db()
+        self.assertEqual(self.claim.text, original_text)
+        self.assertEqual(AuditLog.objects.count(), initial_audit_count)
+
+    def test_delete_claim_rollback_on_audit_failure(self):
+        initial_audit_count = AuditLog.objects.count()
+
+        with patch("claims.services.log_audit_event", side_effect=RuntimeError("Simulated audit failure")):
+            with self.assertRaises(RuntimeError):
+                delete_claim(self.claim.id, self.owner)
+
+        self.claim.refresh_from_db()
+        self.assertFalse(self.claim.is_deleted)
+        self.assertEqual(AuditLog.objects.count(), initial_audit_count)
+
+    def test_service_error_cases_do_not_create_audit_logs(self):
+        initial_audit_count = AuditLog.objects.count()
+        payload = ClaimUpdateSchema(claim_text="Some valid claim update text here.")
+
+        # 1. Update non-existent -> 404
+        with self.assertRaises(Http404):
+            update_claim(uuid.uuid4(), self.owner, payload)
+
+        # 2. Update by non-owner -> 403
+        with self.assertRaises(AuthorizationError):
+            update_claim(self.claim.id, self.other_user, payload)
+
+        # 3. Update non-pending claim -> 409
+        self.claim.status = ClaimStatus.COMPLETED
+        self.claim.save(update_fields=["status"])
+        with self.assertRaises(HttpError):
+            update_claim(self.claim.id, self.owner, payload)
+
+        # 4. Delete non-pending claim by normal owner -> 409
+        with self.assertRaises(HttpError):
+            delete_claim(self.claim.id, self.owner)
+
+        # 5. Delete non-existent -> 404
+        with self.assertRaises(Http404):
+            delete_claim(uuid.uuid4(), self.owner)
+
+        # 6. Delete by unauthorized user -> 403
+        with self.assertRaises(AuthorizationError):
+            delete_claim(self.claim.id, self.other_user)
+
+        self.assertEqual(AuditLog.objects.count(), initial_audit_count)
