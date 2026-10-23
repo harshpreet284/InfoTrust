@@ -197,3 +197,43 @@ NINJA_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
+
+# Cache Configuration
+CACHE_BACKEND = os.environ.get(
+    "CACHE_BACKEND", "django.core.cache.backends.locmem.LocMemCache"
+)
+CACHE_LOCATION = os.environ.get("CACHE_LOCATION", "infotrust_cache")
+
+CACHES = {
+    "default": {
+        "BACKEND": CACHE_BACKEND,
+        "LOCATION": CACHE_LOCATION,
+    }
+}
+
+# Proxy Configuration
+NINJA_NUM_PROXIES = int(os.environ.get("NINJA_NUM_PROXIES", "0"))
+TRUSTED_PROXIES = [
+    ip.strip()
+    for ip in os.environ.get("TRUSTED_PROXIES", "").split(",")
+    if ip.strip()
+]
+
+# Rate Limiting Configuration
+RATE_LIMIT_LOGIN = os.environ.get("RATE_LIMIT_LOGIN", "10/min")
+RATE_LIMIT_REGISTER = os.environ.get("RATE_LIMIT_REGISTER", "5/min")
+RATE_LIMIT_CLAIM_SUBMIT = os.environ.get("RATE_LIMIT_CLAIM_SUBMIT", "30/hour")
+RATE_LIMIT_ANALYSIS_STATUS = os.environ.get("RATE_LIMIT_ANALYSIS_STATUS", "120/hour")
+RATE_LIMIT_FAIL_CLOSED = (
+    os.environ.get("RATE_LIMIT_FAIL_CLOSED", "False").lower() in ("true", "1")
+)
+
+NINJA_DEFAULT_THROTTLE_RATES = {
+    "login": RATE_LIMIT_LOGIN,
+    "register": RATE_LIMIT_REGISTER,
+    "claim_submit": RATE_LIMIT_CLAIM_SUBMIT,
+    "analysis_status": RATE_LIMIT_ANALYSIS_STATUS,
+    "auth": "10000/day",
+    "user": "10000/day",
+    "anon": "1000/day",
+}

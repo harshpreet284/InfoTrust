@@ -1,12 +1,15 @@
 import json
+from unittest.mock import patch
 
-from django.test import Client, TestCase
+from django.core.cache import cache
+from django.test import Client, TestCase, override_settings
 
 from authentication.models import User
 
 
 class RegistrationAPITests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.url = "/api/v1/auth/register"
         self.valid_payload = {
@@ -105,6 +108,7 @@ class RegistrationAPITests(TestCase):
         ]
 
         for pwd, cpwd in invalid_passwords:
+            cache.clear()
             payload = self.valid_payload.copy()
             payload["password"] = pwd
             payload["confirm_password"] = cpwd
@@ -265,6 +269,7 @@ class LoginServiceTests(TestCase):
 
 class LoginAPITests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.url = "/api/v1/auth/login"
         self.user = User.objects.create_user(
@@ -469,6 +474,7 @@ class RefreshTokenAPITests(TestCase):
 
 class LogoutAPITests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.url = "/api/v1/auth/logout"
         self.user = User.objects.create_user(
@@ -571,6 +577,7 @@ class LogoutAPITests(TestCase):
 
 class CurrentUserAPITests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.url = "/api/v1/auth/me"
         self.user = User.objects.create_user(
@@ -653,6 +660,7 @@ from authentication.permissions import RoleAuth
 
 class RBACIntegrationTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.factory = RequestFactory()
 
@@ -733,3 +741,228 @@ class RBACIntegrationTests(TestCase):
             auth.authenticate(request, token)
 
         self.assertEqual(context.exception.status_code, 403)
+
+
+class AuthenticationRateLimitIntegrationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = Client()
+        self.user_password = "SecurePassword123!"
+        self.user = User.objects.create_user(
+            email="ratelimit_user@example.com",
+            full_name="Rate Limit User",
+            password=self.user_password,
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_login_rate_limiting_exhaustion_valid_credentials(self):
+        """
+        Verify that 10 requests with valid credentials succeed (200),
+        the 11th request receives HTTP 429 with standard JSON and Retry-After header,
+        and the cache key is verified.
+        """
+        login_url = "/api/v1/auth/login"
+        payload = {"email": "ratelimit_user@example.com", "password": self.user_password}
+
+        for i in range(10):
+            res = self.client.post(
+                login_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.20",
+            )
+            self.assertEqual(res.status_code, 200, f"Request {i+1} should succeed")
+
+        # 11th request with the exact same valid payload must be throttled
+        res_11 = self.client.post(
+            login_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.20",
+        )
+        self.assertEqual(res_11.status_code, 429)
+        self.assertEqual(
+            res_11.json(),
+            {
+                "success": False,
+                "message": "Rate limit exceeded. Please try again later.",
+            },
+        )
+        self.assertTrue(res_11.has_header("Retry-After"))
+        retry_after = int(res_11["Retry-After"])
+        self.assertGreater(retry_after, 0)
+        self.assertLessEqual(retry_after, 60)
+
+        # Verify exact cache key in cache
+        cached_history = cache.get("throttle_login_198.51.100.20")
+        self.assertIsNotNone(cached_history)
+        self.assertEqual(len(cached_history), 10)
+
+    def test_login_spoofed_ip_rotation_cannot_bypass_quota(self):
+        """
+        Verify that under default configuration (NINJA_NUM_PROXIES=0),
+        sending varying X-Forwarded-For headers from the same REMOTE_ADDR
+        cannot bypass rate limiting.
+        """
+        login_url = "/api/v1/auth/login"
+        payload = {"email": "ratelimit_user@example.com", "password": self.user_password}
+
+        for i in range(10):
+            res = self.client.post(
+                login_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.21",
+                HTTP_X_FORWARDED_FOR=f"10.{i}.0.1",
+            )
+            self.assertEqual(res.status_code, 200)
+
+        # 11th request with yet another spoofed IP must be throttled
+        res_11 = self.client.post(
+            login_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.21",
+            HTTP_X_FORWARDED_FOR="10.99.0.1",
+        )
+        self.assertEqual(res_11.status_code, 429)
+        self.assertEqual(
+            res_11.json(),
+            {
+                "success": False,
+                "message": "Rate limit exceeded. Please try again later.",
+            },
+        )
+
+    def test_login_ip_isolation(self):
+        """
+        Verify that exhausting quota on IP A does not affect requests from IP B.
+        """
+        login_url = "/api/v1/auth/login"
+        payload = {"email": "ratelimit_user@example.com", "password": self.user_password}
+
+        for _ in range(10):
+            res = self.client.post(
+                login_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.22",
+            )
+            self.assertEqual(res.status_code, 200)
+
+        # 11th request from IP A is throttled
+        res_a = self.client.post(
+            login_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.22",
+        )
+        self.assertEqual(res_a.status_code, 429)
+
+        # Request from IP B must succeed
+        res_b = self.client.post(
+            login_url,
+            data=json.dumps(payload),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.23",
+        )
+        self.assertEqual(res_b.status_code, 200)
+
+    def test_register_rate_limiting_exhaustion(self):
+        """
+        Verify that 5 registration requests from the same IP succeed (201)
+        and the 6th request returns HTTP 429.
+        """
+        register_url = "/api/v1/auth/register"
+
+        for i in range(5):
+            payload = {
+                "full_name": f"User {i}",
+                "email": f"new_reg_{i}@example.com",
+                "password": "StrongPassword123!",
+                "confirm_password": "StrongPassword123!",
+            }
+            res = self.client.post(
+                register_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.24",
+            )
+            self.assertEqual(res.status_code, 201)
+
+        # 6th registration from the same IP must be throttled
+        payload_6 = {
+            "full_name": "User 6",
+            "email": "new_reg_6@example.com",
+            "password": "StrongPassword123!",
+            "confirm_password": "StrongPassword123!",
+        }
+        res_6 = self.client.post(
+            register_url,
+            data=json.dumps(payload_6),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.24",
+        )
+        self.assertEqual(res_6.status_code, 429)
+        self.assertEqual(
+            res_6.json(),
+            {
+                "success": False,
+                "message": "Rate limit exceeded. Please try again later.",
+            },
+        )
+        self.assertTrue(res_6.has_header("Retry-After"))
+
+    @override_settings(RATE_LIMIT_FAIL_CLOSED=True)
+    def test_login_fail_closed_cache_read_failure_returns_503(self):
+        """
+        Verify that under RATE_LIMIT_FAIL_CLOSED=True, a cache read failure
+        returns HTTP 503 with exact standard message and no internal stack trace.
+        """
+        login_url = "/api/v1/auth/login"
+        payload = {"email": "ratelimit_user@example.com", "password": self.user_password}
+
+        with patch.object(cache, "get", side_effect=Exception("Database cache read connection refused")):
+            res = self.client.post(
+                login_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.25",
+            )
+            self.assertEqual(res.status_code, 503)
+            self.assertEqual(
+                res.json(),
+                {
+                    "success": False,
+                    "message": "Service temporarily unavailable. Please try again later.",
+                },
+            )
+            self.assertFalse(res.has_header("Retry-After"))
+
+    @override_settings(RATE_LIMIT_FAIL_CLOSED=True)
+    def test_login_fail_closed_cache_write_failure_returns_503(self):
+        """
+        Verify that under RATE_LIMIT_FAIL_CLOSED=True, a cache write failure
+        returns HTTP 503 with exact standard message and no internal stack trace.
+        """
+        login_url = "/api/v1/auth/login"
+        payload = {"email": "ratelimit_user@example.com", "password": self.user_password}
+
+        with patch.object(cache, "set", side_effect=Exception("Database cache write disk full")):
+            res = self.client.post(
+                login_url,
+                data=json.dumps(payload),
+                content_type="application/json",
+                REMOTE_ADDR="198.51.100.26",
+            )
+            self.assertEqual(res.status_code, 503)
+            self.assertEqual(
+                res.json(),
+                {
+                    "success": False,
+                    "message": "Service temporarily unavailable. Please try again later.",
+                },
+            )
+            self.assertFalse(res.has_header("Retry-After"))

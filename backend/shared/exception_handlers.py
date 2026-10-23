@@ -1,3 +1,5 @@
+import math
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
 from django.http import Http404
@@ -6,6 +8,7 @@ from ninja.errors import (
     AuthenticationError,
     AuthorizationError,
     HttpError,
+    Throttled,
     ValidationError,
 )
 
@@ -81,6 +84,29 @@ def setup_exception_handlers(api: NinjaAPI):
             error_code="DATABASE_ERROR"
         )
         return api.create_response(request, response.model_dump(), status=409)
+
+    @api.exception_handler(Throttled)
+    def throttled_errors(request, exc: Throttled):
+        if getattr(request, "_rate_limit_backend_error", False):
+            return api.create_response(
+                request,
+                {
+                    "success": False,
+                    "message": "Service temporarily unavailable. Please try again later.",
+                },
+                status=503,
+            )
+        response = api.create_response(
+            request,
+            {
+                "success": False,
+                "message": "Rate limit exceeded. Please try again later.",
+            },
+            status=429,
+        )
+        if exc.wait is not None:
+            response["Retry-After"] = str(math.ceil(exc.wait))
+        return response
 
     @api.exception_handler(Exception)
     def unexpected_errors(request, exc: Exception):

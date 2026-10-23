@@ -25,6 +25,8 @@ class TestGlobalExceptionHandlersRegistration(TestCase):
         self.assertIn(ObjectDoesNotExist, registered_handlers)
         self.assertIn(IntegrityError, registered_handlers)
         self.assertIn(Exception, registered_handlers)
+        from ninja.errors import Throttled
+        self.assertIn(Throttled, registered_handlers)
 
 
 # Module level test api

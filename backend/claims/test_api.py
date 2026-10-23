@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 import json
-from django.test import TestCase, Client
+from unittest.mock import patch
+from django.core.cache import cache
+from django.test import TestCase, Client, override_settings
 
 from authentication.models import User
 from audit.models import AuditLog
@@ -9,6 +11,7 @@ from analysis.models import Analysis, Verdict
 
 class ClaimApiTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = Client()
         self.user = User.objects.create_user(email="test@example.com", password="password123", full_name="Test User")
         self.other_user = User.objects.create_user(email="other@example.com", password="password123", full_name="Other User")
@@ -1939,3 +1942,168 @@ class ClaimApiTests(TestCase):
         self.assertEqual(resp_patch.status_code, 422)
 
         self.assertEqual(AuditLog.objects.count(), initial_count)
+
+
+class ClaimsRateLimitIntegrationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = Client()
+        self.user_a = User.objects.create_user(
+            email="rate_a@example.com",
+            password="StrongPassword123!",
+            full_name="User Rate A",
+        )
+        self.user_b = User.objects.create_user(
+            email="rate_b@example.com",
+            password="StrongPassword123!",
+            full_name="User Rate B",
+        )
+        login_a = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps({"email": "rate_a@example.com", "password": "StrongPassword123!"}),
+            content_type="application/json",
+        )
+        self.token_a = login_a.json()["data"]["access_token"]
+        self.headers_a = {"HTTP_AUTHORIZATION": f"Bearer {self.token_a}"}
+
+        login_b = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps({"email": "rate_b@example.com", "password": "StrongPassword123!"}),
+            content_type="application/json",
+        )
+        self.token_b = login_b.json()["data"]["access_token"]
+        self.headers_b = {"HTTP_AUTHORIZATION": f"Bearer {self.token_b}"}
+
+    def test_claim_submission_distinct_users_same_ip_independent_quotas(self):
+        """User A exhausts their quota; User B on the same IP is unaffected."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+        shared_ip = "198.51.100.50"
+
+        # User A submits 30 claims successfully
+        for _ in range(30):
+            res = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps(claim_payload),
+                content_type="application/json",
+                REMOTE_ADDR=shared_ip,
+                **self.headers_a,
+            )
+            self.assertEqual(res.status_code, 201)
+
+        # 31st request for User A is throttled
+        res_31 = self.client.post(
+            "/api/v1/claims",
+            data=json.dumps(claim_payload),
+            content_type="application/json",
+            REMOTE_ADDR=shared_ip,
+            **self.headers_a,
+        )
+        self.assertEqual(res_31.status_code, 429)
+        self.assertEqual(
+            res_31.json(),
+            {"success": False, "message": "Rate limit exceeded. Please try again later."},
+        )
+        self.assertIn("Retry-After", res_31.headers)
+        self.assertTrue(int(res_31.headers["Retry-After"]) > 0)
+
+        # User B on the SAME IP submits a claim and succeeds
+        res_b = self.client.post(
+            "/api/v1/claims",
+            data=json.dumps(claim_payload),
+            content_type="application/json",
+            REMOTE_ADDR=shared_ip,
+            **self.headers_b,
+        )
+        self.assertEqual(res_b.status_code, 201)
+
+    def test_claim_submission_same_user_different_ips_quota_exhausted(self):
+        """User A rotating across multiple IPs still hits their quota on the 31st request."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+
+        for i in range(30):
+            ip = f"198.51.100.{(i % 5) + 1}"
+            res = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps(claim_payload),
+                content_type="application/json",
+                REMOTE_ADDR=ip,
+                **self.headers_a,
+            )
+            self.assertEqual(res.status_code, 201)
+
+        res_31 = self.client.post(
+            "/api/v1/claims",
+            data=json.dumps(claim_payload),
+            content_type="application/json",
+            REMOTE_ADDR="203.0.113.99",
+            **self.headers_a,
+        )
+        self.assertEqual(res_31.status_code, 429)
+        self.assertEqual(
+            res_31.json(),
+            {"success": False, "message": "Rate limit exceeded. Please try again later."},
+        )
+
+    def test_claim_submission_cache_key_user_identity(self):
+        """Verifies that the cache key is based on user UUID, not IP."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+        res = self.client.post(
+            "/api/v1/claims",
+            data=json.dumps(claim_payload),
+            content_type="application/json",
+            REMOTE_ADDR="198.51.100.77",
+            **self.headers_a,
+        )
+        self.assertEqual(res.status_code, 201)
+        expected_key = f"throttle_claim_submit_{self.user_a.id}"
+        self.assertIsNotNone(cache.get(expected_key))
+
+    @override_settings(RATE_LIMIT_FAIL_CLOSED=True)
+    def test_claim_submission_fail_closed_cache_read_failure_returns_503(self):
+        """Under fail-closed, cache read failure returns HTTP 503 with standard body."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+        with patch.object(cache, "get", side_effect=Exception("Redis connection refused")):
+            res = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps(claim_payload),
+                content_type="application/json",
+                **self.headers_a,
+            )
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(
+            res.json(),
+            {"success": False, "message": "Service temporarily unavailable. Please try again later."},
+        )
+        self.assertNotIn("Retry-After", res.headers)
+
+    @override_settings(RATE_LIMIT_FAIL_CLOSED=True)
+    def test_claim_submission_fail_closed_cache_write_failure_returns_503(self):
+        """Under fail-closed, cache write failure returns HTTP 503 with standard body."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+        with patch.object(cache, "set", side_effect=Exception("Redis connection timed out")):
+            res = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps(claim_payload),
+                content_type="application/json",
+                **self.headers_a,
+            )
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(
+            res.json(),
+            {"success": False, "message": "Service temporarily unavailable. Please try again later."},
+        )
+        self.assertNotIn("Retry-After", res.headers)
+
+    @override_settings(RATE_LIMIT_FAIL_CLOSED=False)
+    def test_claim_submission_fail_open_cache_failure_allows_request(self):
+        """Under fail-open, cache failure logs error and allows the claim submission."""
+        claim_payload = {"claim_text": "This is a legitimate claim text submitted for verification."}
+        with patch.object(cache, "get", side_effect=Exception("Redis connection refused")):
+            res = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps(claim_payload),
+                content_type="application/json",
+                **self.headers_a,
+            )
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.json()["success"])

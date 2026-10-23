@@ -19,6 +19,7 @@ from claims.schemas import (
 )
 from claims.services import delete_claim, submit_claim, update_claim
 from claims.selectors import get_claim, get_user_claim_history, list_all_claims_for_admin
+from shared.throttling import ClaimSubmitRateThrottle
 
 router = Router(tags=["Claims"])
 
@@ -44,7 +45,12 @@ def _build_history_page_link(
     return f"{path}?{urlencode(params)}"
 
 
-@router.post("", response={201: ClaimSubmitSuccessOut}, auth=RoleAuth(["USER", "ADMIN"]))
+@router.post(
+    "",
+    response={201: ClaimSubmitSuccessOut},
+    auth=RoleAuth(["USER", "ADMIN"]),
+    throttle=ClaimSubmitRateThrottle(),
+)
 def submit_new_claim(request, payload: ClaimCreateSchema):
     claim = submit_claim(user=request.user, payload=payload)
     return 201, {

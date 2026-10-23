@@ -23,12 +23,17 @@ from authentication.services import (
     refresh_access_token,
     register_user,
 )
+from shared.throttling import LoginRateThrottle, RegisterRateThrottle
 
 # Minimal router for the authentication app
 router = Router()
 
 
-@router.post("/register", response={201: RegistrationSuccessOut, 409: dict})
+@router.post(
+    "/register",
+    response={201: RegistrationSuccessOut, 409: dict},
+    throttle=RegisterRateThrottle(),
+)
 def register(request, payload: RegistrationIn):
     try:
         user = register_user(payload)
@@ -45,7 +50,11 @@ def register(request, payload: RegistrationIn):
         }
 
 
-@router.post("/login", response={200: LoginSuccessOut, 401: dict, 403: dict})
+@router.post(
+    "/login",
+    response={200: LoginSuccessOut, 401: dict, 403: dict},
+    throttle=LoginRateThrottle(),
+)
 def login(request, payload: LoginIn):
     try:
         result = authenticate_user(payload)
