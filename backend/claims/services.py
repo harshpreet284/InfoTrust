@@ -22,7 +22,7 @@ def _get_claim_for_mutation(claim_id: uuid.UUID, user: User) -> Claim:
     except ObjectDoesNotExist:
         raise Http404("Claim not found.")
 
-    if claim.user != user and not user.is_superuser:
+    if claim.user_id != user.id and not user.is_superuser:
         raise AuthorizationError(message="You do not have permission to access this claim.")
 
     return claim
@@ -61,7 +61,7 @@ def update_claim(claim_id: uuid.UUID, user: User, payload: ClaimUpdateSchema) ->
     claim = _get_claim_for_mutation(claim_id, user)
 
     # Admins cannot update claims, only the actual owner
-    if claim.user != user:
+    if claim.user_id != user.id:
         raise AuthorizationError(message="You do not have permission to access this claim.")
 
     if claim.status != ClaimStatus.PENDING:
@@ -129,7 +129,7 @@ def _get_claim_for_deletion(claim_id: uuid.UUID, user: User) -> Claim:
     except ObjectDoesNotExist:
         raise Http404("Claim not found.")
 
-    if claim.user != user and not _is_admin_user(user):
+    if claim.user_id != user.id and not _is_admin_user(user):
         raise AuthorizationError(message="You do not have permission to access this claim.")
 
     return claim

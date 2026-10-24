@@ -48,16 +48,16 @@ def _build_claim_search_q(search: Optional[str]) -> Optional[Q]:
 
 def get_claim(claim_id: uuid.UUID, user: User) -> Claim:
     """
-    Retrieves a single active claim.
+    Retrieves a single active claim with related analysis pre-fetched.
     Admins can retrieve any active claim.
     Normal users can retrieve only their own active claims.
     """
-    qs = Claim.objects.filter(id=claim_id, is_deleted=False)
-    
+    qs = Claim.objects.filter(id=claim_id, is_deleted=False).select_related("analysis")
+
     claim = qs.get()
     if not is_admin_user(user) and claim.user_id != user.id:
         raise AuthorizationError("You do not have permission to view this claim.")
-        
+
     return claim
 
 
