@@ -154,7 +154,7 @@ Base path:
 
 Example:
 
-GET /api/v1/claims
+GET /api/v1/claims/history
 
 Future versions:
 
@@ -1190,7 +1190,7 @@ Retrieve all claims submitted by the authenticated user.
 GET
 
 ```
-/api/v1/claims
+/api/v1/claims/history
 ```
 
 ---
@@ -1456,7 +1456,7 @@ Search claims submitted by the authenticated user.
 GET
 
 ```
-/api/v1/claims?search=vaccine
+/api/v1/claims/history?search=vaccine
 ```
 
 ---
@@ -1488,7 +1488,7 @@ Required
 GET
 
 ```
-/api/v1/claims?status=COMPLETED
+/api/v1/claims/history?status=COMPLETED
 ```
 
 ---
@@ -1509,7 +1509,7 @@ GET
 GET
 
 ```
-/api/v1/claims?ordering=-created_at
+/api/v1/claims/history?ordering=-created_at
 ```
 
 ---
@@ -1589,13 +1589,13 @@ COMPLETED         FAILED
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | /claims | POST | Submit a new claim |
-| /claims | GET | List authenticated user's claims |
+| /claims/history | GET | List authenticated user's claims |
 | /claims/{id} | GET | Retrieve claim details |
 | /claims/{id} | PATCH | Update a pending claim |
 | /claims/{id} | DELETE | Soft delete a claim |
-| /claims?search= | GET | Search claims |
-| /claims?status= | GET | Filter claims |
-| /claims?ordering= | GET | Sort claims |
+| /claims/history?search= | GET | Search claims |
+| /claims/history?status= | GET | Filter claims |
+| /claims/history?ordering= | GET | Sort claims |
 
 ---
 
@@ -2880,6 +2880,8 @@ search
 
 ordering
 
+user_id
+
 ---
 
 ## Success Response
@@ -2887,6 +2889,8 @@ ordering
 ```json
 {
   "count": 832,
+  "next": "/api/v1/admin/claims?page=2&page_size=10",
+  "previous": null,
   "results": [
     {
       "claim_id": "uuid",
@@ -2906,7 +2910,7 @@ ordering
 
 ## Purpose
 
-Retrieve complete information about a submitted claim.
+Retrieve complete information about a submitted claim with administrative privileges.
 
 ---
 
@@ -2915,8 +2919,10 @@ Retrieve complete information about a submitted claim.
 GET
 
 ```
-/api/v1/admin/claims/{claim_id}
+/api/v1/claims/{claim_id}
 ```
+
+*Note: Administrative claim detail retrieval is served via the unified endpoint `GET /api/v1/claims/{claim_id}` (see CLAIM-003). When accessed with administrative credentials (`ADMIN` role or superuser), access is granted across all claims regardless of ownership.*
 
 ---
 
@@ -2935,7 +2941,7 @@ GET
 
 ## Purpose
 
-Soft delete an inappropriate claim.
+Soft delete an inappropriate claim with administrative privileges.
 
 ---
 
@@ -2944,17 +2950,20 @@ Soft delete an inappropriate claim.
 DELETE
 
 ```
-/api/v1/admin/claims/{claim_id}
+/api/v1/claims/{claim_id}
 ```
+
+*Note: Administrative claim deletion is served via the unified endpoint `DELETE /api/v1/claims/{claim_id}` (see CLAIM-005). When executed with administrative credentials, claims may be soft-deleted in any status (`PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`), generating an audit log entry while preserving analysis and feedback records.*
 
 ---
 
 ## Business Rules
 
 - Soft delete only.
-- Audit log entry required.
+- Audit log entry required (`CLAIM_DELETED`).
 - Analysis remains stored for auditing.
 - User feedback remains associated with the archived analysis.
+- Administrators may delete claims in any status.
 
 ---
 
@@ -3083,9 +3092,9 @@ The model implementation is configurable and replaceable. Retraining or replacin
 | /admin/users/{id} | GET | User details |
 | /admin/users/{id}/disable | PATCH | Disable user |
 | /admin/users/{id}/enable | PATCH | Enable user |
-| /admin/claims | GET | Review claims |
-| /admin/claims/{id} | GET | View complete claim details |
-| /admin/claims/{id} | DELETE | Soft delete claim |
+| /admin/claims | GET | Review claims across all users |
+| /claims/{id} | GET | View complete claim details (Admin access) |
+| /claims/{id} | DELETE | Soft delete claim in any status (Admin access) |
 | /admin/audit-logs | GET | View audit logs |
 
 ---
