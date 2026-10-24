@@ -19,6 +19,7 @@ from claims.schemas import (
 )
 from claims.services import delete_claim, submit_claim, update_claim
 from claims.selectors import get_claim, get_user_claim_history, list_all_claims_for_admin
+from shared.schemas import ErrorResponse, RateLimitErrorOut, ServiceUnavailableErrorOut
 from shared.throttling import ClaimSubmitRateThrottle
 
 router = Router(tags=["Claims"])
@@ -47,9 +48,30 @@ def _build_history_page_link(
 
 @router.post(
     "",
-    response={201: ClaimSubmitSuccessOut},
+    response={
+        201: ClaimSubmitSuccessOut,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        422: ErrorResponse,
+        429: RateLimitErrorOut,
+        503: ServiceUnavailableErrorOut,
+    },
     auth=RoleAuth(["USER", "ADMIN"]),
     throttle=ClaimSubmitRateThrottle(),
+    summary="Submit a new claim for analysis",
+    description="Creates a new claim in PENDING status for the authenticated user and enqueues it for analysis.",
+    openapi_extra={
+        "responses": {
+            429: {
+                "headers": {
+                    "Retry-After": {
+                        "description": "Seconds to wait before retrying.",
+                        "schema": {"type": "integer"},
+                    }
+                }
+            }
+        }
+    },
 )
 def submit_new_claim(request, payload: ClaimCreateSchema):
     claim = submit_claim(user=request.user, payload=payload)
@@ -60,7 +82,18 @@ def submit_new_claim(request, payload: ClaimCreateSchema):
     }
 
 
-@router.get("/history", response={200: ClaimHistoryPaginationOut}, auth=RoleAuth(["USER", "ADMIN"]))
+@router.get(
+    "/history",
+    response={
+        200: ClaimHistoryPaginationOut,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        422: ErrorResponse,
+    },
+    auth=RoleAuth(["USER", "ADMIN"]),
+    summary="Retrieve user claim history",
+    description="Returns a paginated list of claims submitted by the authenticated user with filtering and sorting options.",
+)
 def get_user_claim_history_endpoint(request, filters: Query[ClaimHistoryFilterSchema]):
     qs = get_user_claim_history(
         user=request.user,
@@ -118,7 +151,19 @@ def get_user_claim_history_endpoint(request, filters: Query[ClaimHistoryFilterSc
     }
 
 
-@router.get("/{claim_id}", response={200: ClaimDetailSuccessOut}, auth=RoleAuth(["USER", "ADMIN"]))
+@router.get(
+    "/{claim_id}",
+    response={
+        200: ClaimDetailSuccessOut,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        422: ErrorResponse,
+    },
+    auth=RoleAuth(["USER", "ADMIN"]),
+    summary="Retrieve claim details",
+    description="Returns detailed information and analysis results for a specific claim. Restricted to the claim owner or administrators.",
+)
 def get_claim_detail(request, claim_id: uuid.UUID):
     claim = get_claim(claim_id=claim_id, user=request.user)
     return 200, {
@@ -128,7 +173,20 @@ def get_claim_detail(request, claim_id: uuid.UUID):
     }
 
 
-@router.patch("/{claim_id}", response={200: ClaimUpdateSuccessOut}, auth=RoleAuth(["USER", "ADMIN"]))
+@router.patch(
+    "/{claim_id}",
+    response={
+        200: ClaimUpdateSuccessOut,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+        422: ErrorResponse,
+    },
+    auth=RoleAuth(["USER", "ADMIN"]),
+    summary="Update pending claim text",
+    description="Updates the text of an existing claim. May only be performed by the claim owner while the claim is in PENDING status.",
+)
 def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSchema):
     claim = update_claim(claim_id=claim_id, user=request.user, payload=payload)
     return 200, {
@@ -138,7 +196,20 @@ def update_existing_claim(request, claim_id: uuid.UUID, payload: ClaimUpdateSche
     }
 
 
-@router.delete("/{claim_id}", response={204: None}, auth=RoleAuth(["USER", "ADMIN"]))
+@router.delete(
+    "/{claim_id}",
+    response={
+        204: None,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        404: ErrorResponse,
+        409: ErrorResponse,
+        422: ErrorResponse,
+    },
+    auth=RoleAuth(["USER", "ADMIN"]),
+    summary="Soft-delete claim",
+    description="Soft-deletes a claim by setting its is_deleted flag. Claim owners may only delete their own claims while in PENDING status; attempting to delete an analyzed claim returns HTTP 409. Administrators may soft-delete claims in any status. Soft-deleted claims are excluded from subsequent API queries.",
+)
 def delete_existing_claim(request, claim_id: uuid.UUID):
     delete_claim(claim_id=claim_id, user=request.user)
     return 204, None
@@ -147,7 +218,18 @@ def delete_existing_claim(request, claim_id: uuid.UUID):
 admin_router = Router(tags=["Admin"])
 
 
-@admin_router.get("/claims", response={200: AdminClaimPaginationOut}, auth=AdminEndpointAuth())
+@admin_router.get(
+    "/claims",
+    response={
+        200: AdminClaimPaginationOut,
+        401: ErrorResponse,
+        403: ErrorResponse,
+        422: ErrorResponse,
+    },
+    auth=AdminEndpointAuth(),
+    summary="List all claims across all users",
+    description="Administrative endpoint returning a paginated list of all claims across all users with advanced filtering.",
+)
 def list_admin_claims_endpoint(request, filters: Query[AdminClaimFilterSchema]):
     qs = list_all_claims_for_admin(
         search=filters.search,

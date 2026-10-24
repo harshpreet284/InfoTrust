@@ -6,11 +6,42 @@ from ninja import Schema
 from pydantic import EmailStr, Field, field_validator, model_validator
 
 
+class AuthErrorOut(Schema):
+    success: bool = Field(False, description="Indicates request failure.")
+    message: str = Field(..., description="Authentication or authorization error message.")
+
+
+class RegistrationConflictOut(Schema):
+    success: bool = Field(False, description="Indicates conflict failure.")
+    message: str = Field("Email already exists.", description="Conflict error summary.")
+    errors: dict[str, list[str]] = Field(..., description="Field-specific conflict details.")
+
+
 class RegistrationIn(Schema):
-    full_name: str = Field(min_length=2, max_length=100)
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    confirm_password: str
+    full_name: str = Field(
+        ...,
+        min_length=2,
+        max_length=100,
+        description="Full name of the user (2 to 100 characters).",
+        examples=["Jane Doe"],
+    )
+    email: EmailStr = Field(
+        ...,
+        description="Valid user email address.",
+        examples=["jane.doe@example.com"],
+    )
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="Account password (8-128 chars, at least 1 uppercase, 1 lowercase, 1 number, 1 special char).",
+        examples=["StrongPass123!"],
+    )
+    confirm_password: str = Field(
+        ...,
+        description="Password confirmation matching password.",
+        examples=["StrongPass123!"],
+    )
 
     @field_validator("full_name", mode="before")
     @classmethod
@@ -59,8 +90,16 @@ class RegistrationSuccessOut(Schema):
 
 
 class LoginIn(Schema):
-    email: EmailStr
-    password: str
+    email: EmailStr = Field(
+        ...,
+        description="User account email address.",
+        examples=["jane.doe@example.com"],
+    )
+    password: str = Field(
+        ...,
+        description="User account password.",
+        examples=["StrongPass123!"],
+    )
 
     @field_validator("email")
     @classmethod
@@ -81,7 +120,12 @@ class LoginSuccessOut(Schema):
 
 
 class RefreshTokenIn(Schema):
-    refresh_token: str
+    refresh_token: str = Field(
+        ...,
+        description="Valid JWT refresh token issued by login or token refresh.",
+        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."],
+    )
+
 
 
 class RefreshDataOut(Schema):

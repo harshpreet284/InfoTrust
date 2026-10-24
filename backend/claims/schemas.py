@@ -29,7 +29,13 @@ def _validate_ordering(v: Optional[str]) -> Optional[str]:
     return v
 
 class ClaimCreateSchema(Schema):
-    claim_text: str = Field(..., min_length=10, max_length=2000)
+    claim_text: str = Field(
+        ...,
+        min_length=10,
+        max_length=2000,
+        description="The full textual content of the claim to be analyzed (10 to 2000 characters). Leading and trailing whitespace is stripped; plain text only, HTML tags are not allowed.",
+        examples=["The World Health Organization announced the eradication of a new viral strain in Geneva today."],
+    )
 
     @field_validator("claim_text", mode="before")
     @classmethod

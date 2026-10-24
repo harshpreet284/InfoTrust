@@ -17,6 +17,7 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path
+from django.views.generic.base import RedirectView
 from ninja import NinjaAPI
 
 from authentication.api import router as auth_router
@@ -26,7 +27,9 @@ from shared.exception_handlers import setup_exception_handlers
 api = NinjaAPI(
     title="InfoTrust API",
     version="1.0.0",
-    description="InfoTrust — AI-Powered Misinformation Detection & Claim Analysis Platform",
+    description="InfoTrust — AI-Powered Misinformation Detection & Claim Analysis Platform REST API",
+    docs_url="/docs",
+    openapi_url="/openapi.json",
 )
 
 api.add_router("/auth", auth_router)
@@ -37,5 +40,9 @@ setup_exception_handlers(api)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/v1/docs/", RedirectView.as_view(url="/api/v1/docs", permanent=False)),
     path("api/v1/", api.urls),
+    path("api/docs", RedirectView.as_view(url="/api/v1/docs", permanent=False)),
+    path("api/docs/", RedirectView.as_view(url="/api/v1/docs", permanent=False)),
+    path("api/openapi.json", RedirectView.as_view(url="/api/v1/openapi.json", permanent=False)),
 ]

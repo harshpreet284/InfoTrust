@@ -6,6 +6,9 @@ from ninja_jwt.authentication import JWTAuth
 
 
 class RoleAuth(JWTAuth):
+    openapi_description = "JWT Bearer authentication. Send token in the 'Authorization: Bearer <token>' header."
+    openapi_bearerFormat = "JWT"
+
     def __init__(self, allowed_roles: List[str]):
         super().__init__()
         self.allowed_roles = allowed_roles

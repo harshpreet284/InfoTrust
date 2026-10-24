@@ -20,6 +20,9 @@ class AdminEndpointAuth(JWTAuth):
     Allows application admins (role == 'ADMIN') and Django superusers (is_superuser == True).
     Rejects normal users with HTTP 403 PERMISSION_DENIED.
     """
+    openapi_description = "Admin-only JWT Bearer authentication. Requires user role 'ADMIN' or superuser status."
+    openapi_bearerFormat = "JWT"
+
     def authenticate(self, request: HttpRequest, token: str):
         user = super().authenticate(request, token)
         if user and not is_admin_user(user):
