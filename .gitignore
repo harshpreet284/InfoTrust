@@ -77,8 +77,12 @@ coverage.xml
 *.bin
 *.onnx
 *.safetensors
-model_artifacts/
-checkpoints/
+/model_artifacts/
+/checkpoints/
+/InfoTrustModels/
+/models/
+/backend/model_artifacts/
+/backend/models/
 
 # ===== Docker =====
 .docker/
