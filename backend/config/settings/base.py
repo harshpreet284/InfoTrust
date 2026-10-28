@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import math
 import os
 import urllib.parse
 from datetime import timedelta
@@ -237,3 +238,22 @@ NINJA_DEFAULT_THROTTLE_RATES = {
     "user": "10000/day",
     "anon": "1000/day",
 }
+
+# External APIs (Fact-Check Service)
+FACT_CHECK_API_KEY = os.environ.get("FACT_CHECK_API_KEY", "")
+
+
+def _get_positive_float_env(var_name: str, default: float) -> float:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        if math.isfinite(val) and val > 0:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return default
+
+
+FACT_CHECK_TIMEOUT_SECONDS = _get_positive_float_env("FACT_CHECK_TIMEOUT_SECONDS", 5.0)
