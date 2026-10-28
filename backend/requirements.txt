@@ -34,3 +34,4 @@ transformers==4.48.3
 tokenizers==0.21.0
 safetensors==0.4.2
 numpy==1.26.4
+sentence-transformers==3.4.1

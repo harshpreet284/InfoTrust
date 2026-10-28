@@ -215,9 +215,7 @@ CACHES = {
 # Proxy Configuration
 NINJA_NUM_PROXIES = int(os.environ.get("NINJA_NUM_PROXIES", "0"))
 TRUSTED_PROXIES = [
-    ip.strip()
-    for ip in os.environ.get("TRUSTED_PROXIES", "").split(",")
-    if ip.strip()
+    ip.strip() for ip in os.environ.get("TRUSTED_PROXIES", "").split(",") if ip.strip()
 ]
 
 # Rate Limiting Configuration
@@ -225,8 +223,9 @@ RATE_LIMIT_LOGIN = os.environ.get("RATE_LIMIT_LOGIN", "10/min")
 RATE_LIMIT_REGISTER = os.environ.get("RATE_LIMIT_REGISTER", "5/min")
 RATE_LIMIT_CLAIM_SUBMIT = os.environ.get("RATE_LIMIT_CLAIM_SUBMIT", "30/hour")
 RATE_LIMIT_ANALYSIS_STATUS = os.environ.get("RATE_LIMIT_ANALYSIS_STATUS", "120/hour")
-RATE_LIMIT_FAIL_CLOSED = (
-    os.environ.get("RATE_LIMIT_FAIL_CLOSED", "False").lower() in ("true", "1")
+RATE_LIMIT_FAIL_CLOSED = os.environ.get("RATE_LIMIT_FAIL_CLOSED", "False").lower() in (
+    "true",
+    "1",
 )
 
 NINJA_DEFAULT_THROTTLE_RATES = {
@@ -257,3 +256,49 @@ def _get_positive_float_env(var_name: str, default: float) -> float:
 
 
 FACT_CHECK_TIMEOUT_SECONDS = _get_positive_float_env("FACT_CHECK_TIMEOUT_SECONDS", 5.0)
+
+
+def _get_bounded_float_env(
+    var_name: str, default: float, min_val: float, max_val: float
+) -> float:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        if math.isfinite(val) and min_val <= val <= max_val:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return default
+
+
+def _get_positive_int_env(var_name: str, default: int) -> int:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+        if val > 0:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return default
+
+
+# Narrative Activity Engine Configuration
+NARRATIVE_SIMILARITY_THRESHOLD = _get_bounded_float_env(
+    "NARRATIVE_SIMILARITY_THRESHOLD", 0.80, 0.0, 1.0
+)
+NARRATIVE_MAX_CANDIDATES = _get_positive_int_env("NARRATIVE_MAX_CANDIDATES", 100)
+NARRATIVE_MEDIUM_ACTIVITY_MIN = _get_positive_int_env(
+    "NARRATIVE_MEDIUM_ACTIVITY_MIN", 2
+)
+NARRATIVE_HIGH_ACTIVITY_MIN = _get_positive_int_env("NARRATIVE_HIGH_ACTIVITY_MIN", 6)
+if NARRATIVE_HIGH_ACTIVITY_MIN <= NARRATIVE_MEDIUM_ACTIVITY_MIN:
+    NARRATIVE_HIGH_ACTIVITY_MIN = NARRATIVE_MEDIUM_ACTIVITY_MIN + 1
+
+NARRATIVE_MODEL_PATH = os.environ.get(
+    "NARRATIVE_MODEL_PATH",
+    str(BASE_DIR.parent / "InfoTrustModels" / "all-MiniLM-L6-v2"),
+)

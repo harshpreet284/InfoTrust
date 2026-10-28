@@ -3104,6 +3104,10 @@ Output:
 
 Narrative Activity object containing similarity metrics.
 
+Definition of Done:
+
+Narrative recurrence metrics and temporal activity can be evaluated against historical claims using isolated, configurable sentence embeddings.
+
 ---
 
 ## AI-007

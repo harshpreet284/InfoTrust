@@ -22,6 +22,18 @@ from analysis.services.inference import (
     InvalidModelOutputError,
     ModelInferenceService,
 )
+from analysis.services.narrative import (
+    EmbeddingGeneratorProtocol,
+    NarrativeActivity,
+    NarrativeActivityService,
+    NarrativeConfigError,
+    NarrativeInferenceError,
+    NarrativeInputError,
+    NarrativeMatchRecord,
+    NarrativeModelUnavailableError,
+    NarrativeServiceError,
+    SentenceTransformerEmbeddingAdapter,
+)
 
 __all__ = [
     # Inference Service
@@ -41,4 +53,15 @@ __all__ = [
     "FactCheckRateLimitError",
     "FactCheckTimeoutError",
     "FactCheckConnectionError",
+    # Narrative Activity Service
+    "NarrativeActivityService",
+    "NarrativeActivity",
+    "NarrativeMatchRecord",
+    "EmbeddingGeneratorProtocol",
+    "SentenceTransformerEmbeddingAdapter",
+    "NarrativeServiceError",
+    "NarrativeConfigError",
+    "NarrativeInputError",
+    "NarrativeModelUnavailableError",
+    "NarrativeInferenceError",
 ]
