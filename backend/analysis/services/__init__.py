@@ -34,6 +34,13 @@ from analysis.services.narrative import (
     NarrativeServiceError,
     SentenceTransformerEmbeddingAdapter,
 )
+from analysis.services.rules import (
+    RuleConfigError,
+    RuleEngineError,
+    RuleEngineService,
+    RuleInputError,
+    RuleValidationResult,
+)
 from analysis.services.similarity import (
     SimilarityCalculationError,
     SimilarityInputError,
@@ -77,4 +84,10 @@ __all__ = [
     "SimilarityServiceError",
     "SimilarityInputError",
     "SimilarityCalculationError",
+    # Rule Engine Service
+    "RuleEngineService",
+    "RuleValidationResult",
+    "RuleEngineError",
+    "RuleConfigError",
+    "RuleInputError",
 ]
