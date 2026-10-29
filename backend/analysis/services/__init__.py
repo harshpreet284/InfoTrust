@@ -16,6 +16,22 @@ from analysis.services.fact_check import (
     FactCheckServiceError,
     FactCheckTimeoutError,
 )
+from analysis.services.hybrid import (
+    DEFAULT_WEIGHT_FACT_CHECK,
+    DEFAULT_WEIGHT_MODEL,
+    DEFAULT_WEIGHT_NARRATIVE,
+    DEFAULT_WEIGHT_RULE_ENGINE,
+    ComponentSignal,
+    HybridAnalysisStatus,
+    HybridConfigError,
+    HybridCredibilityEngine,
+    HybridCredibilityResult,
+    HybridEngineError,
+    HybridInputError,
+    ScoredFactCheckItem,
+    SignalStatus,
+    normalize_fact_check_rating,
+)
 from analysis.services.inference import (
     InferenceServiceError,
     InvalidModelInputError,
@@ -90,4 +106,19 @@ __all__ = [
     "RuleEngineError",
     "RuleConfigError",
     "RuleInputError",
+    # Hybrid Credibility Engine Service
+    "HybridCredibilityEngine",
+    "HybridCredibilityResult",
+    "ComponentSignal",
+    "ScoredFactCheckItem",
+    "SignalStatus",
+    "HybridAnalysisStatus",
+    "HybridEngineError",
+    "HybridConfigError",
+    "HybridInputError",
+    "DEFAULT_WEIGHT_MODEL",
+    "DEFAULT_WEIGHT_FACT_CHECK",
+    "DEFAULT_WEIGHT_NARRATIVE",
+    "DEFAULT_WEIGHT_RULE_ENGINE",
+    "normalize_fact_check_rating",
 ]

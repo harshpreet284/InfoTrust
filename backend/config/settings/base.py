@@ -302,3 +302,15 @@ NARRATIVE_MODEL_PATH = os.environ.get(
     "NARRATIVE_MODEL_PATH",
     str(BASE_DIR.parent / "InfoTrustModels" / "all-MiniLM-L6-v2"),
 )
+
+# Hybrid Credibility Engine Configuration
+HYBRID_WEIGHT_MODEL = _get_bounded_float_env("HYBRID_WEIGHT_MODEL", 0.35, 0.0, 1.0)
+HYBRID_WEIGHT_FACT_CHECK = _get_bounded_float_env(
+    "HYBRID_WEIGHT_FACT_CHECK", 0.40, 0.0, 1.0
+)
+HYBRID_WEIGHT_NARRATIVE = _get_bounded_float_env(
+    "HYBRID_WEIGHT_NARRATIVE", 0.15, 0.0, 1.0
+)
+HYBRID_WEIGHT_RULE_ENGINE = _get_bounded_float_env(
+    "HYBRID_WEIGHT_RULE_ENGINE", 0.10, 0.0, 1.0
+)
