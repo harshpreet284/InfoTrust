@@ -34,6 +34,13 @@ from analysis.services.narrative import (
     NarrativeServiceError,
     SentenceTransformerEmbeddingAdapter,
 )
+from analysis.services.similarity import (
+    SimilarityCalculationError,
+    SimilarityInputError,
+    SimilarityMetrics,
+    SimilarityScoringService,
+    SimilarityServiceError,
+)
 
 __all__ = [
     # Inference Service
@@ -64,4 +71,10 @@ __all__ = [
     "NarrativeInputError",
     "NarrativeModelUnavailableError",
     "NarrativeInferenceError",
+    # Similarity Scoring Service
+    "SimilarityScoringService",
+    "SimilarityMetrics",
+    "SimilarityServiceError",
+    "SimilarityInputError",
+    "SimilarityCalculationError",
 ]
