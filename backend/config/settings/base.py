@@ -314,3 +314,34 @@ HYBRID_WEIGHT_NARRATIVE = _get_bounded_float_env(
 HYBRID_WEIGHT_RULE_ENGINE = _get_bounded_float_env(
     "HYBRID_WEIGHT_RULE_ENGINE", 0.10, 0.0, 1.0
 )
+
+
+# Verdict Generation Configuration (AI-010)
+def _get_verdict_threshold_env(
+    var_name: str, default: float, min_val: float, max_val: float
+) -> float:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        if not math.isfinite(val) or not (min_val <= val <= max_val):
+            raise ValueError(f"Value {val} out of range [{min_val}, {max_val}]")
+        return val
+    except (ValueError, TypeError) as exc:
+        raise ImproperlyConfigured(
+            f"Invalid {var_name} environment variable: {raw!r}. Must be a finite float in [{min_val}, {max_val}]."
+        ) from exc
+
+
+VERDICT_THRESHOLD_CREDIBLE = _get_verdict_threshold_env(
+    "VERDICT_THRESHOLD_CREDIBLE", 70.0, 0.0, 100.0
+)
+VERDICT_THRESHOLD_UNCERTAIN = _get_verdict_threshold_env(
+    "VERDICT_THRESHOLD_UNCERTAIN", 40.0, 0.0, 100.0
+)
+if VERDICT_THRESHOLD_CREDIBLE <= VERDICT_THRESHOLD_UNCERTAIN:
+    raise ImproperlyConfigured(
+        f"VERDICT_THRESHOLD_CREDIBLE ({VERDICT_THRESHOLD_CREDIBLE}) must be strictly greater than "
+        f"VERDICT_THRESHOLD_UNCERTAIN ({VERDICT_THRESHOLD_UNCERTAIN})."
+    )

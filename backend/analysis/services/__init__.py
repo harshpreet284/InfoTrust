@@ -64,6 +64,15 @@ from analysis.services.similarity import (
     SimilarityScoringService,
     SimilarityServiceError,
 )
+from analysis.services.verdict import (
+    DEFAULT_THRESHOLD_CREDIBLE,
+    DEFAULT_THRESHOLD_UNCERTAIN,
+    VerdictConfigError,
+    VerdictEngineError,
+    VerdictInputError,
+    VerdictResult,
+    VerdictService,
+)
 
 __all__ = [
     # Inference Service
@@ -121,4 +130,12 @@ __all__ = [
     "DEFAULT_WEIGHT_NARRATIVE",
     "DEFAULT_WEIGHT_RULE_ENGINE",
     "normalize_fact_check_rating",
+    # Verdict Generation Service
+    "VerdictService",
+    "VerdictResult",
+    "VerdictEngineError",
+    "VerdictConfigError",
+    "VerdictInputError",
+    "DEFAULT_THRESHOLD_CREDIBLE",
+    "DEFAULT_THRESHOLD_UNCERTAIN",
 ]
