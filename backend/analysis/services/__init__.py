@@ -3,6 +3,12 @@ AI Analysis Services package.
 Defines high-level domain services for claim analysis and evaluation.
 """
 
+from analysis.services.explainability import (
+    ExplainabilityEngineError,
+    ExplainabilityInputError,
+    ExplainabilityResult,
+    ExplainabilityService,
+)
 from analysis.services.fact_check import (
     FactCheckAPIError,
     FactCheckAuthError,
@@ -138,4 +144,9 @@ __all__ = [
     "VerdictInputError",
     "DEFAULT_THRESHOLD_CREDIBLE",
     "DEFAULT_THRESHOLD_UNCERTAIN",
+    # Explainability Data Service
+    "ExplainabilityService",
+    "ExplainabilityResult",
+    "ExplainabilityEngineError",
+    "ExplainabilityInputError",
 ]
