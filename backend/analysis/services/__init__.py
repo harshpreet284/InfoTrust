@@ -56,6 +56,12 @@ from analysis.services.narrative import (
     NarrativeServiceError,
     SentenceTransformerEmbeddingAdapter,
 )
+from analysis.services.persistence import (
+    AnalysisAlreadyExistsError,
+    AnalysisPersistenceError,
+    AnalysisPersistenceInputError,
+    AnalysisPersistenceService,
+)
 from analysis.services.rules import (
     RuleConfigError,
     RuleEngineError,
@@ -149,4 +155,9 @@ __all__ = [
     "ExplainabilityResult",
     "ExplainabilityEngineError",
     "ExplainabilityInputError",
+    # Analysis Persistence Service
+    "AnalysisPersistenceService",
+    "AnalysisPersistenceError",
+    "AnalysisPersistenceInputError",
+    "AnalysisAlreadyExistsError",
 ]
