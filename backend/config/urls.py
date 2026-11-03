@@ -20,8 +20,10 @@ from django.urls import path
 from django.views.generic.base import RedirectView
 from ninja import NinjaAPI
 
+from analysis.api import router as analysis_router
 from authentication.api import router as auth_router
-from claims.api import router as claims_router, admin_router
+from claims.api import admin_router
+from claims.api import router as claims_router
 from shared.exception_handlers import setup_exception_handlers
 
 api = NinjaAPI(
@@ -35,6 +37,7 @@ api = NinjaAPI(
 api.add_router("/auth", auth_router)
 api.add_router("/claims", claims_router)
 api.add_router("/admin", admin_router)
+api.add_router("/analysis", analysis_router)
 
 setup_exception_handlers(api)
 
@@ -44,5 +47,8 @@ urlpatterns = [
     path("api/v1/", api.urls),
     path("api/docs", RedirectView.as_view(url="/api/v1/docs", permanent=False)),
     path("api/docs/", RedirectView.as_view(url="/api/v1/docs", permanent=False)),
-    path("api/openapi.json", RedirectView.as_view(url="/api/v1/openapi.json", permanent=False)),
+    path(
+        "api/openapi.json",
+        RedirectView.as_view(url="/api/v1/openapi.json", permanent=False),
+    ),
 ]

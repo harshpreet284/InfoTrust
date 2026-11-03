@@ -3317,24 +3317,37 @@ Complexity:
 
 M
 
-Endpoint:
+Endpoints:
 
-POST
+GET
 
-```
+```text
+/api/v1/analysis/{claim_id}/status
 /api/v1/analysis/{claim_id}
+/api/v1/analysis/{claim_id}/explanation
+/api/v1/analysis/{claim_id}/narrative
+/api/v1/analysis/{claim_id}/fact-check
 ```
+
+Responsibilities:
+
+- Expose RESTful GET endpoints to retrieve persisted analysis outputs and processing status.
+- Enforce JWT authentication and role-based ownership authorization (owner or administrator).
+- Validate claim completion and enforce the 6-state analysis lifecycle validation matrix.
+- Ensure strict isolation of internal forensic diagnostics from public API schemas.
+- Preserve NULL versus genuine-zero values across score contributions and evidence counts.
 
 Returns:
 
-- Verdict
-- Credibility score
-- Explainability report
-- Supporting evidence
+- Analysis status
+- Verdict and credibility score (summary)
+- Explainability report with score breakdown and reasoning
+- Narrative recurrence activity metrics
+- Verified external fact-checking reviews
 
 Definition of Done:
 
-Clients can request a complete analysis through the REST API.
+Clients can retrieve complete persisted analysis results and track processing status through the REST API.
 
 ---
 

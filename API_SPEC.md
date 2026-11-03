@@ -1751,6 +1751,8 @@ HTTP 200 OK
 }
 ```
 
+Note: `created_at` represents the ISO 8601 timestamp when the analysis was completed and persisted (`Analysis.analysis_timestamp`).
+
 ---
 
 ## Possible Errors
@@ -1918,11 +1920,13 @@ Required
   "message": "Fact-check evidence retrieved successfully.",
   "data": {
     "matches_found": 2,
+    "summary": "External fact-checking evidence confirmed 2 matching review(s).",
     "sources": [
       {
-        "title": "Independent Fact Check",
-        "summary": "No evidence supports this claim.",
-        "url": "https://example.org/article"
+        "publisher": "PolitiFact",
+        "rating": "False",
+        "url": "https://politifact.example.com/article",
+        "review_date": "2026-06-25"
       }
     ]
   }
@@ -1933,10 +1937,11 @@ Required
 
 ## Business Rules
 
-- Only metadata required for explainability is stored.
-- Copyrighted article content is never stored.
+- Only metadata required for explainability is stored (`publisher`, `rating`, `url`, `review_date`).
+- Copyrighted article content or scraped titles are never stored.
+- High-level evidence summary is stored per claim (`Analysis.fact_check_summary`).
 - External URLs are returned for reference.
-- Missing fact-check results do not prevent analysis completion.
+- Missing fact-check results do not prevent analysis completion and preserve NULL count semantics.
 
 ---
 
