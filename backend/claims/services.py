@@ -1,4 +1,6 @@
+import logging
 import uuid
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.http import Http404
@@ -9,6 +11,64 @@ from audit.services import log_audit_event
 from authentication.models import User
 from claims.models import Claim, ClaimStatus
 from claims.schemas import ClaimCreateSchema, ClaimUpdateSchema
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_dispatch_claim(claim_id: uuid.UUID) -> None:
+    """
+    Invoked exclusively via transaction.on_commit after a claim is committed.
+    Attempts dispatch via AnalysisPipelineDispatcher.
+    If dispatch fails (dispatcher shutting down or capacity saturated) or raises an unexpected error,
+    transitions the claim PENDING -> FAILED atomically with affected-row check.
+    """
+    try:
+        from analysis.services import get_pipeline_dispatcher
+
+        dispatcher = get_pipeline_dispatcher()
+        dispatched = dispatcher.dispatch(claim_id)
+        if not dispatched:
+            _mark_dispatch_failed(
+                claim_id,
+                reason="Dispatcher rejected task (capacity saturated or shutting down)",
+            )
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error during pipeline dispatch for claim %s: %s",
+            claim_id,
+            exc,
+        )
+        _mark_dispatch_failed(claim_id, reason=f"Dispatch execution failed: {exc}")
+
+
+def _mark_dispatch_failed(claim_id: uuid.UUID, reason: str) -> None:
+    """
+    Transitions a claim from PENDING to FAILED when background dispatch fails.
+    Respects soft-deletion and concurrent state changes using conditional CAS.
+    """
+    logger.warning(
+        "Marking claim %s as FAILED due to dispatch failure: %s", claim_id, reason
+    )
+    try:
+        updated = Claim.objects.filter(
+            id=claim_id,
+            status=ClaimStatus.PENDING,
+            is_deleted=False,
+        ).update(
+            status=ClaimStatus.FAILED,
+            updated_at=timezone.now(),
+        )
+        if updated == 0:
+            logger.info(
+                "Claim %s was not in PENDING or active state; skipping FAILED transition.",
+                claim_id,
+            )
+    except Exception as exc:
+        logger.exception(
+            "Failed to update claim %s to FAILED state after dispatch rejection: %s",
+            claim_id,
+            exc,
+        )
 
 
 def _get_claim_for_mutation(claim_id: uuid.UUID, user: User) -> Claim:
@@ -23,14 +83,17 @@ def _get_claim_for_mutation(claim_id: uuid.UUID, user: User) -> Claim:
         raise Http404("Claim not found.")
 
     if claim.user_id != user.id and not user.is_superuser:
-        raise AuthorizationError(message="You do not have permission to access this claim.")
+        raise AuthorizationError(
+            message="You do not have permission to access this claim."
+        )
 
     return claim
 
 
 def submit_claim(user: User, payload: ClaimCreateSchema) -> Claim:
     """
-    Creates a new pending claim for the user and records a CLAIM_SUBMITTED audit event.
+    Creates a new pending claim for the user, schedules background pipeline analysis
+    on transaction commit, and records a CLAIM_SUBMITTED audit event.
     """
     with transaction.atomic():
         claim = Claim.objects.create(
@@ -49,6 +112,8 @@ def submit_claim(user: User, payload: ClaimCreateSchema) -> Claim:
                 "text_length": len(payload.claim_text),
             },
         )
+        claim_id = claim.id
+        transaction.on_commit(lambda: _safe_dispatch_claim(claim_id))
         return claim
 
 
@@ -62,7 +127,9 @@ def update_claim(claim_id: uuid.UUID, user: User, payload: ClaimUpdateSchema) ->
 
     # Admins cannot update claims, only the actual owner
     if claim.user_id != user.id:
-        raise AuthorizationError(message="You do not have permission to access this claim.")
+        raise AuthorizationError(
+            message="You do not have permission to access this claim."
+        )
 
     if claim.status != ClaimStatus.PENDING:
         raise HttpError(409, "Analysis already started")
@@ -93,7 +160,9 @@ def update_claim(claim_id: uuid.UUID, user: User, payload: ClaimUpdateSchema) ->
 
             # Defensive fallback: record exists, is active, and is PENDING,
             # but conditional update affected 0 rows (unexpected update conflict).
-            raise HttpError(409, "Claim update conflict. The claim could not be updated.")
+            raise HttpError(
+                409, "Claim update conflict. The claim could not be updated."
+            )
 
         log_audit_event(
             action="CLAIM_UPDATED",
@@ -114,7 +183,9 @@ def _is_admin_user(user: User) -> bool:
     Checks if a user has administrator privileges.
     Recognizes application admins (role == 'ADMIN') and Django superusers (is_superuser == True).
     """
-    return getattr(user, "role", None) == "ADMIN" or getattr(user, "is_superuser", False)
+    return getattr(user, "role", None) == "ADMIN" or getattr(
+        user, "is_superuser", False
+    )
 
 
 def _get_claim_for_deletion(claim_id: uuid.UUID, user: User) -> Claim:
@@ -130,7 +201,9 @@ def _get_claim_for_deletion(claim_id: uuid.UUID, user: User) -> Claim:
         raise Http404("Claim not found.")
 
     if claim.user_id != user.id and not _is_admin_user(user):
-        raise AuthorizationError(message="You do not have permission to access this claim.")
+        raise AuthorizationError(
+            message="You do not have permission to access this claim."
+        )
 
     return claim
 
@@ -179,7 +252,9 @@ def delete_claim(claim_id: uuid.UUID, user: User) -> None:
 
             # Defensive fallback: record exists, is active, and passed status check,
             # but conditional update affected 0 rows (unexpected update conflict).
-            raise HttpError(409, "Claim delete conflict. The claim could not be updated.")
+            raise HttpError(
+                409, "Claim delete conflict. The claim could not be updated."
+            )
 
         # Read the exact status from the row locked by the soft-delete update
         actual_status = Claim.objects.values_list("status", flat=True).get(id=claim.id)

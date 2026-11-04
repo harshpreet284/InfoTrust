@@ -3,6 +3,11 @@ AI Analysis Services package.
 Defines high-level domain services for claim analysis and evaluation.
 """
 
+from analysis.services.dispatcher import (
+    AnalysisPipelineDispatcher,
+    get_pipeline_dispatcher,
+    set_pipeline_dispatcher,
+)
 from analysis.services.explainability import (
     ExplainabilityEngineError,
     ExplainabilityInputError,
@@ -61,6 +66,9 @@ from analysis.services.persistence import (
     AnalysisPersistenceError,
     AnalysisPersistenceInputError,
     AnalysisPersistenceService,
+)
+from analysis.services.pipeline import (
+    AnalysisPipelineService,
 )
 from analysis.services.rules import (
     RuleConfigError,
@@ -160,4 +168,9 @@ __all__ = [
     "AnalysisPersistenceError",
     "AnalysisPersistenceInputError",
     "AnalysisAlreadyExistsError",
+    # Pipeline Dispatcher & Orchestration Service (AI-014)
+    "AnalysisPipelineDispatcher",
+    "get_pipeline_dispatcher",
+    "set_pipeline_dispatcher",
+    "AnalysisPipelineService",
 ]
