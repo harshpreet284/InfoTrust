@@ -68,11 +68,16 @@ class Analysis(models.Model):
                 name="valid_final_weighted_score_range",
             ),
             models.CheckConstraint(
-                check=models.Q(verdict__in=Verdict.values) | models.Q(verdict__isnull=True),
-                name="valid_verdict_values"
+                check=models.Q(verdict__in=Verdict.values)
+                | models.Q(verdict__isnull=True),
+                name="valid_verdict_values",
             ),
             models.CheckConstraint(
-                check=(models.Q(model_confidence__gte=0.0) & models.Q(model_confidence__lte=1.0)) | models.Q(model_confidence__isnull=True),
+                check=(
+                    models.Q(model_confidence__gte=0.0)
+                    & models.Q(model_confidence__lte=1.0)
+                )
+                | models.Q(model_confidence__isnull=True),
                 name="valid_model_confidence_range",
             ),
         ]
@@ -83,3 +88,45 @@ class Analysis(models.Model):
 
     def __str__(self):
         return f"Analysis for Claim {self.claim_id}"
+
+
+class AnalysisFailureDiagnostic(models.Model):
+    """
+    Stores durable, sanitized failure diagnostics for claims that reach FAILED status (AI-015).
+    Maintains a 1-to-1 relationship with Claim, sharing the Claim's UUID as primary key.
+    """
+
+    claim = models.OneToOneField(
+        Claim,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="failure_diagnostic",
+    )
+    error_code = models.CharField(
+        max_length=64,
+        help_text="Standardized public error code (e.g. PREPROCESSING_REJECTED).",
+    )
+    error_message = models.CharField(
+        max_length=255,
+        help_text="Sanitized, human-readable explanation suitable for public API exposure.",
+    )
+    retryable = models.BooleanField(
+        default=False,
+        help_text="Indicates whether client resubmission or retry may succeed.",
+    )
+    failure_stage = models.CharField(
+        max_length=64,
+        help_text="Pipeline stage where failure occurred (e.g. PREPROCESSING, SYNTHESIS).",
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Timestamp when failure diagnostic was recorded.",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["created_at"], name="analysis_fail_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.claim_id} - {self.error_code}"

@@ -38,6 +38,14 @@ if not SECRET_KEY:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "True") == "True"
 
+# Deployment environment identifier (fails closed to production)
+INFOTRUST_ENV = os.environ.get("INFOTRUST_ENV", "production").strip().lower()
+
+# Explicit opt-in for unmanifested development/test artifacts (disabled by default)
+MODEL_ALLOW_UNMANIFESTED_ARTIFACTS = os.environ.get(
+    "MODEL_ALLOW_UNMANIFESTED_ARTIFACTS", "False"
+).strip().lower() in ("true", "1")
+
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 
@@ -345,3 +353,27 @@ if VERDICT_THRESHOLD_CREDIBLE <= VERDICT_THRESHOLD_UNCERTAIN:
         f"VERDICT_THRESHOLD_CREDIBLE ({VERDICT_THRESHOLD_CREDIBLE}) must be strictly greater than "
         f"VERDICT_THRESHOLD_UNCERTAIN ({VERDICT_THRESHOLD_UNCERTAIN})."
     )
+
+# Fact-Check External API Resilience Configuration (AI-015)
+# Hard maximum of 3 total attempts enforced; cannot be overridden higher via environment.
+FACT_CHECK_MAX_ATTEMPTS = min(3, _get_positive_int_env("FACT_CHECK_MAX_ATTEMPTS", 3))
+FACT_CHECK_BACKOFF_BASE = _get_positive_float_env("FACT_CHECK_BACKOFF_BASE", 0.5)
+FACT_CHECK_BACKOFF_FACTOR = _get_positive_float_env("FACT_CHECK_BACKOFF_FACTOR", 2.0)
+FACT_CHECK_BACKOFF_MAX = _get_positive_float_env("FACT_CHECK_BACKOFF_MAX", 2.0)
+FACT_CHECK_PER_ATTEMPT_TIMEOUT = _get_positive_float_env(
+    "FACT_CHECK_PER_ATTEMPT_TIMEOUT", 3.0
+)
+FACT_CHECK_OVERALL_DEADLINE = _get_positive_float_env(
+    "FACT_CHECK_OVERALL_DEADLINE", 10.0
+)
+FACT_CHECK_JITTER_RATIO = _get_bounded_float_env(
+    "FACT_CHECK_JITTER_RATIO", 0.25, 0.0, 1.0
+)
+
+# Model Inference Resilience & Circuit Breaker (AI-015)
+MODEL_CIRCUIT_BREAKER_TTL_SECONDS = _get_positive_float_env(
+    "MODEL_CIRCUIT_BREAKER_TTL_SECONDS", 60.0
+)
+MODEL_CIRCUIT_BREAKER_TRANSIENT_TTL_SECONDS = _get_positive_float_env(
+    "MODEL_CIRCUIT_BREAKER_TRANSIENT_TTL_SECONDS", 5.0
+)

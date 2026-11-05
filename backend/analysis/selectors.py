@@ -36,7 +36,7 @@ def get_claim_with_analysis_for_user(claim_id: uuid.UUID, user: User) -> Claim:
     try:
         claim = (
             Claim.objects.filter(id=claim_id, is_deleted=False)
-            .select_related("analysis")
+            .select_related("analysis", "failure_diagnostic")
             .get()
         )
     except Claim.DoesNotExist:
@@ -75,9 +75,30 @@ def _require_completed_analysis(claim: Claim) -> Analysis:
 def get_analysis_status_data(claim_id: uuid.UUID, user: User) -> AnalysisStatusData:
     """
     Retrieves the processing status of an analysis for a claim.
+    If the claim has FAILED, attaches sanitized failure diagnostics.
     """
     claim = get_claim_with_analysis_for_user(claim_id, user)
-    return AnalysisStatusData(claim_id=claim.id, status=claim.status)
+    error_code = None
+    error_message = None
+    retryable = None
+
+    if (
+        claim.status == ClaimStatus.FAILED
+        and hasattr(claim, "failure_diagnostic")
+        and claim.failure_diagnostic is not None
+    ):
+        diag = claim.failure_diagnostic
+        error_code = diag.error_code
+        error_message = diag.error_message
+        retryable = diag.retryable
+
+    return AnalysisStatusData(
+        claim_id=claim.id,
+        status=claim.status,
+        error_code=error_code,
+        error_message=error_message,
+        retryable=retryable,
+    )
 
 
 def get_analysis_summary_data(claim_id: uuid.UUID, user: User) -> AnalysisSummaryData:

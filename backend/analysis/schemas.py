@@ -21,6 +21,16 @@ class AnalysisStatusData(Schema):
     status: str = Field(
         ..., description="Current status: PENDING, PROCESSING, COMPLETED, or FAILED."
     )
+    error_code: Optional[str] = Field(
+        None, description="Standardized public error code for FAILED claims."
+    )
+    error_message: Optional[str] = Field(
+        None,
+        description="Human-readable safe explanation suitable for public API exposure.",
+    )
+    retryable: Optional[bool] = Field(
+        None, description="Indicates whether client resubmission or retry may succeed."
+    )
 
 
 class AnalysisStatusOut(Schema):
@@ -29,6 +39,21 @@ class AnalysisStatusOut(Schema):
         "Analysis status retrieved successfully.", description="Status message."
     )
     data: AnalysisStatusData
+
+
+class FailureDiagnosticSchema(Schema):
+    """Public schema for serialized claim failure diagnostic information."""
+
+    error_code: str = Field(
+        ..., description="Standardized public error code for FAILED claims."
+    )
+    error_message: str = Field(
+        ...,
+        description="Human-readable safe explanation suitable for public API exposure.",
+    )
+    retryable: bool = Field(
+        ..., description="Indicates whether client resubmission or retry may succeed."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,10 +10,10 @@ import logging
 import uuid
 from typing import Optional
 
-from django.db import DatabaseError, close_old_connections, transaction
+from django.db import DatabaseError, close_old_connections, connection, transaction
 from django.utils import timezone
 
-from analysis.models import Analysis
+from analysis.models import Analysis, AnalysisFailureDiagnostic
 from analysis.preprocessing import ClaimPreprocessingError, preprocess_claim_text
 from analysis.services.explainability import (
     ExplainabilityEngineError,
@@ -71,6 +71,33 @@ from analysis.services.verdict import (
 from claims.models import Claim, ClaimStatus
 
 logger = logging.getLogger(__name__)
+
+VALID_FAILURE_STAGES = frozenset({"PREPROCESSING", "SYNTHESIS", "PERSISTENCE"})
+DEFAULT_FALLBACK_STAGE = "SYNTHESIS"
+DEFAULT_FALLBACK_ERROR_CODE = "ANALYSIS_FAILED"
+
+PUBLIC_ERROR_MAPPINGS = {
+    "PREPROCESSING_REJECTED": {
+        "error_code": "PREPROCESSING_REJECTED",
+        "error_message": "Claim text could not be processed due to invalid or unparsable content.",
+        "retryable": False,
+    },
+    "INVALID_INPUT_CONTRACT": {
+        "error_code": "INVALID_INPUT_CONTRACT",
+        "error_message": "Claim input violates system processing requirements.",
+        "retryable": False,
+    },
+    "SERVICE_UNAVAILABLE": {
+        "error_code": "SERVICE_UNAVAILABLE",
+        "error_message": "Analysis service is temporarily unavailable. Please retry later.",
+        "retryable": True,
+    },
+    "ANALYSIS_FAILED": {
+        "error_code": "ANALYSIS_FAILED",
+        "error_message": "An unexpected error occurred during claim analysis.",
+        "retryable": False,
+    },
+}
 
 
 class AnalysisPipelineService:
@@ -157,13 +184,21 @@ class AnalysisPipelineService:
             cleaned_text = preprocess_claim_text(claim.text)
         except ClaimPreprocessingError as exc:
             logger.warning("Claim %s failed text preprocessing: %s", claim_id, exc)
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="PREPROCESSING",
+                error_code="PREPROCESSING_REJECTED",
+            )
             return
         except Exception as exc:
             logger.exception(
                 "Unexpected error preprocessing claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="PREPROCESSING",
+                error_code="PREPROCESSING_REJECTED",
+            )
             return
 
         # Step 4: Component Evidence Gathering (Zone 1)
@@ -176,7 +211,11 @@ class AnalysisPipelineService:
             logger.exception(
                 "Fatal model inference error for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="INVALID_INPUT_CONTRACT",
+            )
             return
         except InferenceServiceError as exc:
             logger.warning(
@@ -189,7 +228,11 @@ class AnalysisPipelineService:
                 claim_id,
                 exc,
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # 4b. Google Fact Check
@@ -199,7 +242,11 @@ class AnalysisPipelineService:
             fact_check_result = self.fact_check_service.query(cleaned_text)
         except (FactCheckConfigError, FactCheckInputError, TypeError) as exc:
             logger.exception("Fatal fact check error for claim %s: %s", claim_id, exc)
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="INVALID_INPUT_CONTRACT",
+            )
             return
         except FactCheckServiceError as exc:
             logger.warning(
@@ -212,7 +259,11 @@ class AnalysisPipelineService:
                 claim_id,
                 exc,
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # 4c. Narrative Activity
@@ -226,7 +277,11 @@ class AnalysisPipelineService:
             logger.exception(
                 "Fatal narrative activity error for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="INVALID_INPUT_CONTRACT",
+            )
             return
         except NarrativeServiceError as exc:
             logger.warning(
@@ -239,7 +294,11 @@ class AnalysisPipelineService:
                 claim_id,
                 exc,
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # 4d. Similarity Scoring
@@ -253,7 +312,11 @@ class AnalysisPipelineService:
                 logger.exception(
                     "Fatal similarity input error for claim %s: %s", claim_id, exc
                 )
-                self._mark_claim_failed(claim_id)
+                self._mark_claim_failed(
+                    claim_id,
+                    failure_stage="SYNTHESIS",
+                    error_code="INVALID_INPUT_CONTRACT",
+                )
                 return
             except (SimilarityCalculationError, SimilarityServiceError) as exc:
                 logger.warning(
@@ -268,7 +331,11 @@ class AnalysisPipelineService:
                     claim_id,
                     exc,
                 )
-                self._mark_claim_failed(claim_id)
+                self._mark_claim_failed(
+                    claim_id,
+                    failure_stage="SYNTHESIS",
+                    error_code="ANALYSIS_FAILED",
+                )
                 return
 
         # 4e. Rule Engine
@@ -278,7 +345,11 @@ class AnalysisPipelineService:
             rule_validation_result = self.rule_service.evaluate(cleaned_text)
         except (RuleConfigError, RuleInputError, TypeError) as exc:
             logger.exception("Fatal rule engine error for claim %s: %s", claim_id, exc)
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="INVALID_INPUT_CONTRACT",
+            )
             return
         except RuleEngineError as exc:
             logger.warning(
@@ -291,7 +362,11 @@ class AnalysisPipelineService:
                 claim_id,
                 exc,
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # Step 5: Synthesis (Hybrid Credibility -> Verdict -> Explainability)
@@ -315,13 +390,21 @@ class AnalysisPipelineService:
             logger.exception(
                 "Hybrid aggregation failure for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
         except Exception as exc:
             logger.exception(
                 "Unexpected error in hybrid aggregation for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         try:
@@ -335,13 +418,21 @@ class AnalysisPipelineService:
             logger.exception(
                 "Verdict generation failure for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
         except Exception as exc:
             logger.exception(
                 "Unexpected error in verdict generation for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         try:
@@ -358,13 +449,21 @@ class AnalysisPipelineService:
             logger.exception(
                 "Explainability generation failure for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
         except Exception as exc:
             logger.exception(
                 "Unexpected error in explainability for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="SYNTHESIS",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # Step 6: Persistence Boundary (Strict separation of Zone 1 and Zone 2)
@@ -377,7 +476,11 @@ class AnalysisPipelineService:
             logger.exception(
                 "Persistence input validation failed for claim %s: %s", claim_id, exc
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="PERSISTENCE",
+                error_code="INVALID_INPUT_CONTRACT",
+            )
             return
         except (
             AnalysisAlreadyExistsError,
@@ -398,7 +501,11 @@ class AnalysisPipelineService:
                 claim_id,
                 exc,
             )
-            self._mark_claim_failed(claim_id)
+            self._mark_claim_failed(
+                claim_id,
+                failure_stage="PERSISTENCE",
+                error_code="ANALYSIS_FAILED",
+            )
             return
 
         # Step 7: Zone 2 - Post-Persistence Completion
@@ -411,7 +518,8 @@ class AnalysisPipelineService:
         row-level lock on Claim (matching AI-012's lock acquisition), inspects Analysis
         existence, and updates status conditionally.
         """
-        close_old_connections()
+        if not connection.in_atomic_block:
+            close_old_connections()
         try:
             with transaction.atomic():
                 try:
@@ -456,6 +564,17 @@ class AnalysisPipelineService:
                         target_status,
                         analysis_exists,
                     )
+                    if target_status == ClaimStatus.FAILED:
+                        mapping = PUBLIC_ERROR_MAPPINGS["SERVICE_UNAVAILABLE"]
+                        AnalysisFailureDiagnostic.objects.get_or_create(
+                            claim_id=claim_id,
+                            defaults={
+                                "error_code": "SERVICE_UNAVAILABLE",
+                                "error_message": mapping["error_message"],
+                                "retryable": mapping["retryable"],
+                                "failure_stage": "PERSISTENCE",
+                            },
+                        )
                 else:
                     logger.error(
                         "Reconciliation conditional update unexpected result for claim %s: "
@@ -541,26 +660,79 @@ class AnalysisPipelineService:
                 exc,
             )
 
-    def _mark_claim_failed(self, claim_id: uuid.UUID) -> None:
+    def _mark_claim_failed(
+        self,
+        claim_id: uuid.UUID,
+        *,
+        failure_stage: str,
+        error_code: str = DEFAULT_FALLBACK_ERROR_CODE,
+    ) -> None:
         """
-        Transitions a claim from PROCESSING to FAILED via conditional CAS.
-        Used strictly for pre-persistence failures.
+        Atomically transitions a claim from PROCESSING to FAILED via conditional CAS
+        and persists an AnalysisFailureDiagnostic record.
+
+        Raises:
+            ValueError: If failure_stage is not one of PREPROCESSING, SYNTHESIS, PERSISTENCE.
+                        Raised BEFORE opening any database transaction or updating status.
         """
-        try:
-            updated = Claim.objects.filter(
-                id=claim_id,
-                status=ClaimStatus.PROCESSING,
-                is_deleted=False,
-            ).update(
-                status=ClaimStatus.FAILED,
-                updated_at=timezone.now(),
+        if (
+            not isinstance(failure_stage, str)
+            or failure_stage.strip().upper() not in VALID_FAILURE_STAGES
+        ):
+            raise ValueError(
+                f"Invalid failure_stage: '{failure_stage}'. Must be one of {sorted(VALID_FAILURE_STAGES)}"
             )
-            if updated == 0:
-                logger.info(
-                    "Claim %s was not in active PROCESSING state; skipping FAILED transition.",
-                    claim_id,
+        normalized_stage = failure_stage.strip().upper()
+
+        code = (
+            error_code.strip().upper()
+            if isinstance(error_code, str) and error_code.strip()
+            else DEFAULT_FALLBACK_ERROR_CODE
+        )
+        if code not in PUBLIC_ERROR_MAPPINGS:
+            logger.warning(
+                "Unrecognized failure error_code '%s' for claim %s; normalizing to %s",
+                error_code,
+                claim_id,
+                DEFAULT_FALLBACK_ERROR_CODE,
+            )
+            code = DEFAULT_FALLBACK_ERROR_CODE
+
+        mapping = PUBLIC_ERROR_MAPPINGS[code]
+        sanitized_message = mapping["error_message"]
+        retryable = mapping["retryable"]
+
+        try:
+            with transaction.atomic():
+                updated = Claim.objects.filter(
+                    id=claim_id,
+                    status=ClaimStatus.PROCESSING,
+                    is_deleted=False,
+                ).update(
+                    status=ClaimStatus.FAILED,
+                    updated_at=timezone.now(),
                 )
-            else:
-                logger.info("Claim %s transitioned to FAILED.", claim_id)
+                if updated == 0:
+                    logger.info(
+                        "Claim %s was not in active PROCESSING state; skipping FAILED transition.",
+                        claim_id,
+                    )
+                    return
+
+                AnalysisFailureDiagnostic.objects.get_or_create(
+                    claim_id=claim_id,
+                    defaults={
+                        "error_code": code,
+                        "error_message": sanitized_message,
+                        "retryable": retryable,
+                        "failure_stage": normalized_stage,
+                    },
+                )
+                logger.info(
+                    "Claim %s transitioned to FAILED: code=%s, stage=%s",
+                    claim_id,
+                    code,
+                    normalized_stage,
+                )
         except Exception as exc:
             logger.exception("Failed to mark claim %s as FAILED: %s", claim_id, exc)

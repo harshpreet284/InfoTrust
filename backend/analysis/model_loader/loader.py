@@ -4,10 +4,23 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from django.conf import settings
+
+
+def should_allow_missing_manifest() -> bool:
+    """
+    Determines if unmanifested artifact loading is permitted.
+    Requires BOTH an explicit development/test environment AND an explicit opt-in setting.
+    Fails closed in production, staging, and unknown environments.
+    """
+    env = getattr(settings, "INFOTRUST_ENV", "production").strip().lower()
+    is_dev_or_test = env in ("development", "test", "local")
+    opt_in = getattr(settings, "MODEL_ALLOW_UNMANIFESTED_ARTIFACTS", False)
+    return bool(is_dev_or_test and opt_in)
 
 
 class ModelLoadingError(RuntimeError):
@@ -297,13 +310,28 @@ def resolve_artifact_path(raw_path: Optional[str | Path] = None) -> Path:
 
 class ModelLoader:
     """
-    Thread-safe, instance-bound loader for fine-tuned DeBERTa model artifacts and tokenizers.
-    Implements lazy double-checked locking, path resolution, isolated tokenizer normalization,
-    and device synchronization.
+    Thread-safe, process-cached loader for fine-tuned DeBERTa model artifacts and tokenizers.
+    Implements lazy double-checked locking, manifest schema validation, cold SHA-256 integrity verification,
+    canonical directory cache isolation, and device synchronization.
     """
 
     _compute_tokenizer_identity = staticmethod(_compute_tokenizer_identity)
     _atomic_publish_dir = staticmethod(_atomic_publish_dir)
+
+    _model_load_lock = threading.Lock()
+    _cached_model: Optional[Any] = None
+    _cached_tokenizer: Optional[Any] = None
+    _cached_fingerprint: Optional[str] = None
+    _cached_artifact_dir: Optional[str] = None
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        """Resets the process-wide model and tokenizer cache (for testing/reloads)."""
+        with cls._model_load_lock:
+            cls._cached_model = None
+            cls._cached_tokenizer = None
+            cls._cached_fingerprint = None
+            cls._cached_artifact_dir = None
 
     def __init__(
         self,
@@ -563,23 +591,252 @@ class ModelLoader:
 
         return config
 
+    def validate_and_read_manifest(
+        self,
+        artifact_path: Path,
+        verify_weights_digest: bool = False,
+    ) -> tuple[dict[str, Any], str]:
+        """
+        Validates artifact integrity and manifest schema.
+        - In production/staging: model_manifest.json is strictly required.
+        - In dev/test: missing manifest falls back to structural signature check only if opted in.
+        - On cold load (verify_weights_digest=True): streams model.safetensors and validates SHA-256 digest.
+        - On warm hit (verify_weights_digest=False): checks schema, release_id, and file sizes/mtimes (<0.1ms).
+
+        Returns:
+            Tuple of (manifest_data, cache_fingerprint).
+        """
+        manifest_file = artifact_path / "model_manifest.json"
+        if not manifest_file.is_file():
+            if not should_allow_missing_manifest():
+                env = getattr(settings, "INFOTRUST_ENV", "production").strip().lower()
+                raise ModelArtifactNotFoundError(
+                    f"model_manifest.json not found in {artifact_path} and unmanifested artifacts are disallowed in environment '{env}'.",
+                    path=str(artifact_path),
+                    missing_files=["model_manifest.json"],
+                )
+
+            # Fallback: structural signature check for development/test
+            mandatory = ["config.json", "tokenizer.json", "model.safetensors"]
+            missing = [f for f in mandatory if not (artifact_path / f).is_file()]
+            if missing:
+                raise ModelArtifactNotFoundError(
+                    f"Mandatory artifact files missing in {artifact_path}: {missing}",
+                    path=str(artifact_path),
+                    missing_files=missing,
+                )
+
+            try:
+                stat_cfg = (artifact_path / "config.json").stat()
+                stat_tok = (artifact_path / "tokenizer.json").stat()
+                stat_weights = (artifact_path / "model.safetensors").stat()
+            except OSError as err:
+                raise ModelArtifactCorruptedError(
+                    f"Filesystem error inspecting artifacts in {artifact_path}: {err}"
+                ) from err
+
+            synthetic_fingerprint = (
+                f"unmanifested:{self._model_version}:"
+                f"{stat_cfg.st_size}_{stat_cfg.st_mtime_ns}:"
+                f"{stat_tok.st_size}_{stat_tok.st_mtime_ns}:"
+                f"{stat_weights.st_size}_{stat_weights.st_mtime_ns}:"
+                f"{artifact_path.resolve()}"
+            )
+            return {"unmanifested": True}, synthetic_fingerprint
+
+        # Manifest exists: strictly parse and validate schema
+        try:
+            raw_bytes = manifest_file.read_bytes()
+            manifest = json.loads(raw_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise ModelArtifactCorruptedError(
+                f"Corrupted model_manifest.json at {manifest_file}: {err}"
+            ) from err
+        except OSError as err:
+            raise ModelLoadingError(
+                f"Filesystem error reading {manifest_file}: {err}"
+            ) from err
+
+        if not isinstance(manifest, dict):
+            raise ModelArtifactCorruptedError(
+                f"Invalid model_manifest.json at {manifest_file}: expected JSON object (dict), got {type(manifest).__name__}"
+            )
+
+        release_id = manifest.get("release_id")
+        if (
+            isinstance(release_id, bool)
+            or not isinstance(release_id, str)
+            or not release_id.strip()
+        ):
+            raise ModelArtifactCorruptedError(
+                f"Invalid or missing 'release_id' in {manifest_file}"
+            )
+
+        model_version = manifest.get("model_version")
+        if isinstance(model_version, bool) or not isinstance(model_version, str):
+            raise ModelArtifactCorruptedError(
+                f"Invalid 'model_version' in {manifest_file}: expected string"
+            )
+        if self._model_version and model_version != self._model_version:
+            raise ModelArtifactCorruptedError(
+                f"Manifest model_version mismatch: expected '{self._model_version}', got '{model_version}'"
+            )
+
+        files = manifest.get("files")
+        if not isinstance(files, dict):
+            raise ModelArtifactCorruptedError(
+                f"Invalid or missing 'files' dictionary in {manifest_file}"
+            )
+
+        required_files = ("config.json", "tokenizer.json", "model.safetensors")
+        for req_f in required_files:
+            if req_f not in files:
+                raise ModelArtifactCorruptedError(
+                    f"Manifest {manifest_file} missing required file entry for '{req_f}'"
+                )
+            entry = files[req_f]
+            if not isinstance(entry, dict):
+                raise ModelArtifactCorruptedError(
+                    f"Manifest entry for '{req_f}' must be a dict, got {type(entry).__name__}"
+                )
+
+            # Strict SHA-256 string validation without type coercion
+            raw_sha = entry.get("sha256")
+            if isinstance(raw_sha, bool) or not isinstance(raw_sha, str):
+                raise ModelArtifactCorruptedError(
+                    f"Invalid sha256 type for {req_f} in manifest: expected hex string, got {type(raw_sha).__name__}"
+                )
+            sha_normalized = raw_sha.strip().lower()
+            if len(sha_normalized) != 64 or any(
+                c not in "0123456789abcdef" for c in sha_normalized
+            ):
+                raise ModelArtifactCorruptedError(
+                    f"Invalid sha256 format for {req_f} in manifest: must be 64-char hex string, got '{raw_sha}'"
+                )
+
+            raw_size = entry.get("size")
+            if (
+                isinstance(raw_size, bool)
+                or not isinstance(raw_size, int)
+                or raw_size <= 0
+            ):
+                raise ModelArtifactCorruptedError(
+                    f"Invalid size for {req_f} in manifest: expected positive int, got {raw_size!r}"
+                )
+
+            target_path = artifact_path / req_f
+            if not target_path.is_file():
+                raise ModelArtifactNotFoundError(
+                    f"Manifest file '{req_f}' not found on disk at {target_path}",
+                    path=str(artifact_path),
+                    missing_files=[req_f],
+                )
+
+            try:
+                st = target_path.stat()
+            except OSError as err:
+                raise ModelLoadingError(
+                    f"Filesystem error reading {target_path}: {err}"
+                ) from err
+
+            if st.st_size != raw_size:
+                raise ModelArtifactCorruptedError(
+                    f"File size mismatch for {req_f}: manifest expects {raw_size} bytes, disk has {st.st_size} bytes"
+                )
+
+            # In-memory checksum validation for config and tokenizer on every check
+            if req_f in ("config.json", "tokenizer.json"):
+                computed = hashlib.sha256(target_path.read_bytes()).hexdigest()
+                if computed.lower() != sha_normalized:
+                    raise ModelArtifactCorruptedError(
+                        f"SHA-256 digest mismatch for {req_f}: manifest expects {sha_normalized}, calculated {computed}"
+                    )
+
+            # Full weights SHA-256 validation only on cold load
+            if req_f == "model.safetensors" and verify_weights_digest:
+                hasher = hashlib.sha256()
+                try:
+                    with open(target_path, "rb") as f:
+                        while chunk := f.read(65536):
+                            hasher.update(chunk)
+                except OSError as err:
+                    raise ModelLoadingError(
+                        f"Filesystem error hashing {target_path}: {err}"
+                    ) from err
+                computed_weights = hasher.hexdigest()
+                if computed_weights.lower() != sha_normalized:
+                    raise ModelArtifactCorruptedError(
+                        f"SHA-256 digest mismatch for {req_f}: manifest expects {sha_normalized}, calculated {computed_weights}"
+                    )
+
+        fingerprint = (
+            f"manifest:{release_id}:{model_version}:"
+            f"{files['model.safetensors']['size']}:{files['model.safetensors']['sha256']}:"
+            f"{artifact_path.resolve()}"
+        )
+        return manifest, fingerprint
+
     def get_model_and_tokenizer(self) -> tuple[Any, Any]:
         """
-        Thread-safe lazy initialization of model weights and tokenizer.
-        Guarantees that disk files and weights are loaded exactly once per ModelLoader instance.
+        Thread-safe cached initialization of model weights and tokenizer.
+        Verifies manifest schema and directory isolation.
+        Performs full cryptographic validation on cold load under _model_load_lock.
         """
-        if self._model is None or self._tokenizer is None:
-            with self._lock:
-                if self._model is None or self._tokenizer is None:
-                    self._load()
-                    self._load_count += 1
+        if self._model is not None and self._tokenizer is not None:
+            return self._model, self._tokenizer
+
+        resolved_path = resolve_artifact_path(self._raw_artifact_path)
+        canonical_dir_str = str(resolved_path.resolve())
+
+        # 1. Manifest / metadata validation (verify_weights_digest=False for fast cache hit)
+        _, fingerprint = self.validate_and_read_manifest(
+            resolved_path, verify_weights_digest=False
+        )
+
+        # 2. Fast cache hit check
+        if (
+            ModelLoader._cached_model is not None
+            and ModelLoader._cached_tokenizer is not None
+            and ModelLoader._cached_artifact_dir == canonical_dir_str
+            and ModelLoader._cached_fingerprint == fingerprint
+        ):
+            self._model = ModelLoader._cached_model
+            self._tokenizer = ModelLoader._cached_tokenizer
+            self._resolved_path = resolved_path
+            return self._model, self._tokenizer
+
+        # 3. Cache miss: serialize model loading under process-wide lock
+        with ModelLoader._model_load_lock:
+            if (
+                ModelLoader._cached_model is not None
+                and ModelLoader._cached_tokenizer is not None
+                and ModelLoader._cached_artifact_dir == canonical_dir_str
+                and ModelLoader._cached_fingerprint == fingerprint
+            ):
+                self._model = ModelLoader._cached_model
+                self._tokenizer = ModelLoader._cached_tokenizer
+                self._resolved_path = resolved_path
+                return self._model, self._tokenizer
+
+            # Cold load: full SHA-256 verification of weights
+            self.validate_and_read_manifest(resolved_path, verify_weights_digest=True)
+
+            self._load(resolved_path)
+            self._load_count += 1
+
+            ModelLoader._cached_model = self._model
+            ModelLoader._cached_tokenizer = self._tokenizer
+            ModelLoader._cached_fingerprint = fingerprint
+            ModelLoader._cached_artifact_dir = canonical_dir_str
+
         return self._model, self._tokenizer
 
-    def _load(self) -> None:
+    def _load(self, resolved_path: Optional[Path] = None) -> None:
         import safetensors
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        resolved_path = resolve_artifact_path(self._raw_artifact_path)
+        if resolved_path is None:
+            resolved_path = resolve_artifact_path(self._raw_artifact_path)
         self._resolved_path = resolved_path
         self._device = self._resolve_device(self._device_override)
 

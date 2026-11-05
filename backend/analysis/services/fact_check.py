@@ -4,11 +4,15 @@ Coordinates external claim verification queries against Google Fact Check Tools 
 and normalizes returned evidence for downstream analysis.
 """
 
+import datetime
+import email.utils
 import json
 import logging
 import math
 import os
+import random
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -184,6 +188,57 @@ def _build_summary(sources: Sequence[FactCheckEvidenceItem]) -> str:
     )
 
 
+def _extract_retry_after(headers: Any) -> Optional[str]:
+    """Extracts the Retry-After header string from HTTP headers (dict, HTTPMessage, or similar)."""
+    if headers is None:
+        return None
+    if hasattr(headers, "get"):
+        val = headers.get("Retry-After")
+        if val is not None:
+            return str(val)
+        val = headers.get("retry-after")
+        if val is not None:
+            return str(val)
+    if hasattr(headers, "items"):
+        for k, v in headers.items():
+            if str(k).lower() == "retry-after":
+                return str(v)
+    return None
+
+
+def _parse_retry_after(header_val: str) -> Optional[float]:
+    """
+    Parses a Retry-After header value supporting delta-seconds and HTTP-date formats.
+    Returns non-negative float seconds if valid, or None if malformed.
+    """
+    if not isinstance(header_val, str):
+        return None
+    val = header_val.strip()
+    if not val:
+        return None
+
+    # 1. Delta-seconds (non-negative integer)
+    if val.isdigit():
+        try:
+            sec = float(int(val))
+            return sec if sec >= 0.0 else None
+        except (ValueError, OverflowError):
+            return None
+
+    # 2. HTTP-date (RFC 7231 / RFC 9110, e.g. 'Fri, 31 Dec 1999 23:59:59 GMT')
+    try:
+        dt = email.utils.parsedate_to_datetime(val)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        diff = (dt - now).total_seconds()
+        return max(0.0, diff)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Fact-Check Service
 # ---------------------------------------------------------------------------
@@ -309,50 +364,145 @@ class FactCheckService:
         }
         req = urllib.request.Request(request_url, headers=headers, method="GET")
 
-        try:
-            with self._http_client(req, timeout=self.timeout) as resp:
-                raw_body = resp.read()
-        except (TimeoutError, socket.timeout):
-            raise FactCheckTimeoutError(
-                "Fact-check provider request timed out."
-            ) from None
-        except urllib.error.HTTPError as err:
-            if err.code in (401, 403):
-                raise FactCheckAuthError(
-                    f"Fact-check provider authentication failed (HTTP {err.code}).",
-                    status_code=err.code,
-                ) from None
-            elif err.code == 429:
-                raise FactCheckRateLimitError(
-                    "Fact-check provider rate limit exceeded (HTTP 429).",
-                    status_code=err.code,
-                ) from None
-            elif err.code == 400:
-                raise FactCheckAPIError(
-                    "Fact-check provider rejected request: Bad Request (HTTP 400).",
-                    status_code=err.code,
-                ) from None
-            else:
-                raise FactCheckAPIError(
-                    f"Fact-check provider returned server error (HTTP {err.code}).",
-                    status_code=err.code,
-                ) from None
-        except urllib.error.URLError as err:
-            if isinstance(err.reason, (TimeoutError, socket.timeout)):
-                raise FactCheckTimeoutError(
+        # Enforce architectural hard maximum of 3 attempts; settings cannot increase it
+        configured_attempts = getattr(settings, "FACT_CHECK_MAX_ATTEMPTS", 3)
+        max_attempts = min(3, max(1, int(configured_attempts)))
+        base_backoff = getattr(settings, "FACT_CHECK_BACKOFF_BASE", 0.5)
+        backoff_factor = getattr(settings, "FACT_CHECK_BACKOFF_FACTOR", 2.0)
+        backoff_max = getattr(settings, "FACT_CHECK_BACKOFF_MAX", 2.0)
+        overall_deadline_budget = getattr(settings, "FACT_CHECK_OVERALL_DEADLINE", 10.0)
+        per_attempt_timeout = getattr(
+            settings, "FACT_CHECK_PER_ATTEMPT_TIMEOUT", self.timeout
+        )
+        jitter_ratio = getattr(settings, "FACT_CHECK_JITTER_RATIO", 0.25)
+        min_retry_delay = 0.05
+
+        rate_limit_retried = False
+        t_deadline = time.monotonic() + overall_deadline_budget
+        last_error = None
+        raw_body = None
+
+        for attempt in range(max_attempts):
+            t_remaining = t_deadline - time.monotonic()
+            if t_remaining <= 0.0:
+                raise FactCheckTimeoutError("Fact-check overall deadline exceeded.")
+
+            attempt_timeout = min(per_attempt_timeout, t_remaining)
+
+            try:
+                with self._http_client(req, timeout=attempt_timeout) as resp:
+                    raw_body = resp.read()
+                    break
+            except (TimeoutError, socket.timeout):
+                last_error = FactCheckTimeoutError(
                     "Fact-check provider request timed out."
-                ) from None
-            raise FactCheckConnectionError(
-                "Failed to establish network connection to fact-check provider."
-            ) from None
-        except OSError as err:
-            if isinstance(err, (TimeoutError, socket.timeout)):
+                )
+            except urllib.error.HTTPError as err:
+                if err.code in (401, 403):
+                    raise FactCheckAuthError(
+                        f"Fact-check provider authentication failed (HTTP {err.code}).",
+                        status_code=err.code,
+                    ) from None
+                elif err.code == 429:
+                    if rate_limit_retried:
+                        raise FactCheckRateLimitError(
+                            "Fact-check provider rate limit exceeded (HTTP 429): retry limit reached.",
+                            status_code=err.code,
+                        ) from None
+
+                    raw_retry_after = _extract_retry_after(
+                        getattr(err, "headers", None)
+                    )
+                    if not raw_retry_after:
+                        raise FactCheckRateLimitError(
+                            "Fact-check provider rate limit exceeded (HTTP 429): missing Retry-After header.",
+                            status_code=err.code,
+                        ) from None
+
+                    retry_delay = _parse_retry_after(raw_retry_after)
+                    if retry_delay is None:
+                        raise FactCheckRateLimitError(
+                            f"Fact-check provider rate limit exceeded (HTTP 429): malformed Retry-After header '{raw_retry_after}'.",
+                            status_code=err.code,
+                        ) from None
+
+                    if retry_delay > 2.0:
+                        raise FactCheckRateLimitError(
+                            f"Fact-check provider rate limit exceeded (HTTP 429): Retry-After {retry_delay:.2f}s exceeds 2.0s maximum.",
+                            status_code=err.code,
+                        ) from None
+
+                    if attempt + 1 >= max_attempts:
+                        raise FactCheckRateLimitError(
+                            "Fact-check provider rate limit exceeded (HTTP 429): maximum attempts reached.",
+                            status_code=err.code,
+                        ) from None
+
+                    t_remaining = t_deadline - time.monotonic()
+                    if (t_remaining - retry_delay) < 0.5:
+                        raise FactCheckTimeoutError(
+                            "Fact-check overall deadline budget exhausted by Retry-After delay."
+                        ) from None
+
+                    rate_limit_retried = True
+                    if retry_delay > 0.0:
+                        time.sleep(retry_delay)
+                    continue
+                elif err.code == 400:
+                    raise FactCheckAPIError(
+                        "Fact-check provider rejected request: Bad Request (HTTP 400).",
+                        status_code=err.code,
+                    ) from None
+                elif 500 <= err.code < 600:
+                    last_error = FactCheckAPIError(
+                        f"Fact-check provider returned server error (HTTP {err.code}).",
+                        status_code=err.code,
+                    )
+                else:
+                    raise FactCheckAPIError(
+                        f"Fact-check provider returned server error (HTTP {err.code}).",
+                        status_code=err.code,
+                    ) from None
+            except urllib.error.URLError as err:
+                if isinstance(err.reason, (TimeoutError, socket.timeout)):
+                    last_error = FactCheckTimeoutError(
+                        "Fact-check provider request timed out."
+                    )
+                else:
+                    last_error = FactCheckConnectionError(
+                        "Failed to establish network connection to fact-check provider."
+                    )
+            except OSError as err:
+                if isinstance(err, (TimeoutError, socket.timeout)):
+                    last_error = FactCheckTimeoutError(
+                        "Fact-check provider request timed out."
+                    )
+                else:
+                    last_error = FactCheckConnectionError(
+                        "Failed to establish network connection to fact-check provider."
+                    )
+
+            if attempt + 1 >= max_attempts:
+                raise last_error
+
+            # Calculate retry sleep with 0.5s safety margin reserved for next network attempt
+            t_raw = base_backoff * (backoff_factor**attempt)
+            t_jittered = t_raw * (1.0 + random.uniform(-jitter_ratio, jitter_ratio))
+            t_capped = min(t_jittered, backoff_max)
+
+            t_remaining = t_deadline - time.monotonic()
+            t_sleep = min(t_capped, max(0.0, t_remaining - 0.5))
+
+            if t_sleep < min_retry_delay or (t_remaining - 0.5) < min_retry_delay:
+                logger.warning(
+                    "Fact-check deadline safety margin exhausted before attempt %d; aborting.",
+                    attempt + 1,
+                )
                 raise FactCheckTimeoutError(
-                    "Fact-check provider request timed out."
-                ) from None
-            raise FactCheckConnectionError(
-                "Failed to establish network connection to fact-check provider."
-            ) from None
+                    "Fact-check overall deadline budget exhausted."
+                )
+
+            time.sleep(t_sleep)
 
         # Parse JSON response
         try:
