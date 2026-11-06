@@ -435,6 +435,39 @@ class AnalysisPipelineService:
             )
             return
 
+        model_version = None
+        artifact_fingerprint = None
+        get_provenance = getattr(self.model_service, "get_provenance_snapshot", None)
+        if callable(get_provenance):
+            try:
+                snapshot = get_provenance()
+                if isinstance(snapshot, tuple) and len(snapshot) == 2:
+                    raw_version, raw_fingerprint = snapshot
+                    model_version = (
+                        raw_version if isinstance(raw_version, str) else None
+                    )
+                    artifact_fingerprint = (
+                        raw_fingerprint if isinstance(raw_fingerprint, str) else None
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to retrieve model provenance snapshot for claim %s",
+                    claim_id,
+                    exc_info=True,
+                )
+        else:
+            try:
+                raw_v = getattr(self.model_service, "model_version", None)
+                if isinstance(raw_v, str):
+                    model_version = raw_v
+            except Exception:
+                pass
+            try:
+                raw_f = getattr(self.model_service, "artifact_fingerprint", None)
+                if isinstance(raw_f, str):
+                    artifact_fingerprint = raw_f
+            except Exception:
+                pass
         try:
             explainability_result = self.explainability_service.generate_explainability(
                 hybrid_result,
@@ -444,6 +477,8 @@ class AnalysisPipelineService:
                 narrative_activity=narrative_activity,
                 rule_validation_result=rule_validation_result,
                 similarity_metrics=similarity_metrics,
+                model_version=model_version,
+                artifact_fingerprint=artifact_fingerprint,
             )
         except (ExplainabilityEngineError, ExplainabilityInputError, TypeError) as exc:
             logger.exception(

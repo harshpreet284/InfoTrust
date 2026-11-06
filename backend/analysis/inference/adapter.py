@@ -20,7 +20,9 @@ class ModelOutput:
             raise TypeError(
                 f"prediction must be an instance of ModelPrediction, got {type(self.prediction)}"
             )
-        if not isinstance(self.confidence, (int, float)) or isinstance(self.confidence, bool):
+        if not isinstance(self.confidence, (int, float)) or isinstance(
+            self.confidence, bool
+        ):
             raise TypeError(
                 f"confidence must be a float or int, got {type(self.confidence)}"
             )
@@ -39,6 +41,9 @@ class ModelAdapterProtocol(Protocol):
     """
     Structural interface for fine-tuned misinformation classification models.
     Enforces the Model Adapter / Loader boundary specified in ARCHITECTURE.md Section 42.
+
+    Core contract:
+    - predict(cleaned_text): Standardized inference method (required).
     """
 
     def predict(self, cleaned_text: str) -> ModelOutput:
@@ -51,4 +56,22 @@ class ModelAdapterProtocol(Protocol):
         Returns:
             ModelOutput containing standardized ModelPrediction and confidence.
         """
+        ...
+
+
+@runtime_checkable
+class ManagedModelAdapterProtocol(ModelAdapterProtocol, Protocol):
+    """
+    Extended structural interface for managed model adapters providing provenance
+    and cache partition isolation metadata.
+    """
+
+    @property
+    def model_version(self) -> str:
+        """Returns the semantic version string of the active model (e.g. 'v1', 'v2')."""
+        ...
+
+    @property
+    def artifact_fingerprint(self) -> str:
+        """Returns the verified cryptographic or structural artifact fingerprint."""
         ...

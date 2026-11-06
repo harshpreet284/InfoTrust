@@ -248,28 +248,31 @@ def resolve_artifact_path(raw_path: Optional[str | Path] = None) -> Path:
     Resolves the model artifact directory across local development, Docker, and CI.
 
     Search Order:
-    1. If raw_path is given and absolute -> use directly.
-    2. If raw_path is given and relative:
-       a. Check relative to settings.BASE_DIR (handles Docker /app and backend/ subfolder execution).
-       b. Check relative to settings.BASE_DIR.parent (handles local dev with repo-root folders like InfoTrustModels/).
-    3. If raw_path is None or empty:
-       Check configured default locations in order:
-       - BASE_DIR / "model_artifacts" / "final_model_corrected"
-       - BASE_DIR.parent / "InfoTrustModels" / "final_model_corrected"
-       - BASE_DIR.parent / "model_artifacts" / "final_model_corrected"
-       - BASE_DIR / "model_artifacts"
-       - BASE_DIR.parent / "InfoTrustModels"
-    4. Flexible checkpoint unwrapping:
+    1. If raw_path is given and non-empty -> use directly (absolute, or relative to BASE_DIR / BASE_DIR.parent).
+    2. Else if settings.MODEL_ARTIFACT_PATH is configured -> use it.
+    3. Else if INFOTRUST_ENV not in ('development', 'test', 'local') -> fail closed (raise ModelArtifactNotFoundError).
+    4. Else (development/test/local) -> scan legacy candidate locations.
+    5. Flexible checkpoint unwrapping:
        - If resolved directory contains model.safetensors, return it.
        - If resolved directory contains a subfolder 'final_model_corrected' with model.safetensors, return the subfolder.
-    5. If all candidates fail -> raise ModelArtifactNotFoundError listing all attempted paths.
+    6. If all candidates fail -> raise ModelArtifactNotFoundError listing all attempted paths.
     """
     base_dir = getattr(settings, "BASE_DIR", Path.cwd())
     attempted_paths: list[str] = []
 
     candidates: list[Path] = []
-    if raw_path:
-        p = Path(raw_path)
+    effective_path = raw_path
+    if effective_path is None or (
+        isinstance(effective_path, str) and not effective_path.strip()
+    ):
+        configured = getattr(settings, "MODEL_ARTIFACT_PATH", None)
+        if configured and str(configured).strip():
+            effective_path = str(configured).strip()
+        else:
+            effective_path = None
+
+    if effective_path is not None:
+        p = Path(effective_path)
         if p.is_absolute():
             candidates.append(p)
         else:
@@ -277,7 +280,15 @@ def resolve_artifact_path(raw_path: Optional[str | Path] = None) -> Path:
             if hasattr(base_dir, "parent") and base_dir.parent != base_dir:
                 candidates.append(base_dir.parent / p)
     else:
-        # Check standard defaults
+        env = getattr(settings, "INFOTRUST_ENV", "production").strip().lower()
+        if env not in ("development", "test", "local"):
+            raise ModelArtifactNotFoundError(
+                "MODEL_ARTIFACT_PATH must be explicitly configured in production/staging environments.",
+                path="None",
+                missing_files=["model.safetensors"],
+            )
+
+        # Check standard defaults for development / test
         candidates.append(base_dir / "model_artifacts" / "final_model_corrected")
         if hasattr(base_dir, "parent") and base_dir.parent != base_dir:
             candidates.append(
@@ -303,9 +314,69 @@ def resolve_artifact_path(raw_path: Optional[str | Path] = None) -> Path:
 
     raise ModelArtifactNotFoundError(
         f"Model artifact directory not found. Attempted paths: {attempted_paths}",
-        path=str(raw_path or "default locations"),
+        path=str(raw_path or effective_path or "default locations"),
         missing_files=["model.safetensors"],
     )
+
+
+def validate_model_availability(
+    artifact_path: Optional[str | Path] = None,
+    expected_version: Optional[str] = None,
+) -> tuple[Path, str]:
+    """
+    Weight-free structural validation for model artifacts, files, readability, and manifest.
+    Zero PyTorch tensor loading. Zero CUDA initialization.
+
+    Returns:
+        Tuple of (resolved_path, artifact_fingerprint).
+    """
+    resolved = resolve_artifact_path(artifact_path)
+    if not resolved.is_dir():
+        raise ModelArtifactNotFoundError(
+            f"Model artifact directory not found: {resolved}",
+            path=str(resolved),
+            missing_files=["model.safetensors"],
+        )
+
+    mandatory = ["config.json", "tokenizer.json", "model.safetensors"]
+    missing = [f for f in mandatory if not (resolved / f).is_file()]
+    if missing:
+        raise ModelArtifactNotFoundError(
+            f"Mandatory artifact files missing in {resolved}: {missing}",
+            path=str(resolved),
+            missing_files=missing,
+        )
+
+    # Verify config.json readability without loading PyTorch weights
+    config_file = resolved / "config.json"
+    try:
+        raw_bytes = config_file.read_bytes()
+        config_data = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as err:
+        raise ModelArtifactCorruptedError(
+            f"Corrupt config.json at {config_file}: {err}"
+        ) from err
+
+    if not isinstance(config_data, dict):
+        raise ModelArtifactCorruptedError(
+            f"Invalid config.json root in {resolved}: expected JSON object"
+        )
+
+    if config_data.get("model_type") != "deberta-v2":
+        raise ModelArtifactCorruptedError(
+            f"Invalid model_type in config.json: expected 'deberta-v2', got '{config_data.get('model_type')}'"
+        )
+
+    # Validate manifest and compute fingerprint without loading weights
+    version_to_check = expected_version or getattr(settings, "MODEL_VERSION", "v1")
+    loader = ModelLoader(
+        artifact_path=resolved,
+        model_version=version_to_check,
+    )
+    _, fingerprint = loader.validate_and_read_manifest(
+        resolved, verify_weights_digest=False
+    )
+    return resolved, fingerprint
 
 
 class ModelLoader:
@@ -379,9 +450,15 @@ class ModelLoader:
         """
         Returns the verified cryptographic artifact fingerprint bound to this validated model instance.
         Triggers model resolution and manifest validation if not already executed.
+        Does not eagerly load PyTorch model weights or initialize CUDA.
         """
         if self._fingerprint is None:
-            self.get_model_and_tokenizer()
+            resolved_path = resolve_artifact_path(self._raw_artifact_path)
+            _, fingerprint = self.validate_and_read_manifest(
+                resolved_path, verify_weights_digest=False
+            )
+            self._fingerprint = fingerprint
+            self._resolved_path = resolved_path
         return self._fingerprint
 
     @property
@@ -692,6 +769,7 @@ class ModelLoader:
             raise ModelArtifactCorruptedError(
                 f"Manifest model_version mismatch: expected '{self._model_version}', got '{model_version}'"
             )
+        self._model_version = model_version
 
         files = manifest.get("files")
         if not isinstance(files, dict):

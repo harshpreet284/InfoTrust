@@ -1,10 +1,10 @@
-from collections import OrderedDict
 import enum
 import hashlib
 import logging
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from typing import Optional, Tuple
 
 from django.conf import settings
@@ -219,7 +219,7 @@ _shared_circuit_breaker: ModelCircuitBreaker = ModelCircuitBreaker()
 class InferencePredictionCache:
     """
     Thread-safe, bounded LRU cache for model prediction results.
-    Maps deberta:{artifact_id}:{text_hash} -> ModelOutput.
+    Maps model:{fingerprint}:{text_hash} -> ModelOutput.
     """
 
     def __init__(self, max_entries: Optional[int] = None):
@@ -286,6 +286,10 @@ class ModelInferenceService:
             prediction_cache: Optional InferencePredictionCache instance. If None,
                               uses the process-wide shared prediction cache.
         """
+        if adapter is not None and not callable(getattr(adapter, "predict", None)):
+            raise TypeError(
+                f"adapter must implement a callable predict method, got {type(adapter).__name__}"
+            )
         self._adapter = adapter
         if circuit_breaker is not None:
             self._circuit_breaker = circuit_breaker
@@ -319,12 +323,15 @@ class ModelInferenceService:
     def adapter(self) -> ModelAdapterProtocol:
         """
         Resolves the active adapter. Lazily instantiates DebertaModelAdapter
-        if no adapter was injected.
+        with configured settings if no adapter was injected.
         """
         if self._adapter is None:
             from analysis.inference.deberta import DebertaModelAdapter
 
-            self._adapter = DebertaModelAdapter()
+            self._adapter = DebertaModelAdapter(
+                artifact_path=getattr(settings, "MODEL_ARTIFACT_PATH", None),
+                model_version=getattr(settings, "MODEL_VERSION", "v1"),
+            )
         return self._adapter
 
     @property
@@ -333,7 +340,54 @@ class ModelInferenceService:
         Returns the model version string reported by the configured adapter,
         or None if the adapter does not expose a version.
         """
-        return getattr(self.adapter, "model_version", None)
+        try:
+            return getattr(self.adapter, "model_version", None)
+        except Exception:
+            return None
+
+    @property
+    def artifact_fingerprint(self) -> Optional[str]:
+        """
+        Returns the verified artifact fingerprint reported by the configured adapter,
+        or None if the adapter does not expose a fingerprint.
+        """
+        try:
+            return getattr(self.adapter, "artifact_fingerprint", None)
+        except Exception:
+            return None
+
+    def get_provenance_snapshot(self) -> tuple[Optional[str], Optional[str]]:
+        """
+        Safely captures (model_version, artifact_fingerprint) from the currently
+        instantiated adapter. If no adapter has been instantiated, or if property
+        access raises an exception, returns (None, None) without instantiating
+        adapters or loading weights.
+        """
+        if self._adapter is None:
+            return None, None
+
+        version: Optional[str] = None
+        fingerprint: Optional[str] = None
+
+        try:
+            raw_ver = getattr(self._adapter, "model_version", None)
+            if isinstance(raw_ver, str) and raw_ver.strip():
+                version = raw_ver.strip()
+        except Exception as exc:
+            logger.warning("Failed to safely read model_version from adapter: %s", exc)
+            version = None
+
+        try:
+            raw_fp = getattr(self._adapter, "artifact_fingerprint", None)
+            if isinstance(raw_fp, str) and raw_fp.strip():
+                fingerprint = raw_fp.strip()
+        except Exception as exc:
+            logger.warning(
+                "Failed to safely read artifact_fingerprint from adapter: %s", exc
+            )
+            fingerprint = None
+
+        return version, fingerprint
 
     def predict(self, cleaned_text: str) -> ModelOutput:
         """
@@ -373,10 +427,11 @@ class ModelInferenceService:
         from analysis.inference.deberta import ModelInferenceError
 
         # 2. Artifact integrity validation & fingerprint resolution
+        fingerprint: Optional[str] = None
         try:
-            artifact_id = getattr(self.adapter, "artifact_fingerprint", None)
-            if not artifact_id:
-                artifact_id = getattr(self.adapter, "model_version", None) or "unknown"
+            raw_fp = getattr(self.adapter, "artifact_fingerprint", None)
+            if isinstance(raw_fp, str) and raw_fp.strip():
+                fingerprint = raw_fp.strip()
         except (
             ModelInferenceError,
             ModelLoadingError,
@@ -386,14 +441,19 @@ class ModelInferenceService:
             self._circuit_breaker.record_failure(err, probe_id)
             raise InferenceServiceError(f"Model inference failed: {err}") from err
         except Exception as err:
-            self._circuit_breaker.record_failure(err, probe_id)
-            raise
+            logger.warning(
+                "Failed to obtain artifact fingerprint from adapter; bypassing cache: %s",
+                err,
+            )
+            fingerprint = None
 
-        # 3. Cache lookup (bypassed if request is a circuit breaker probe)
-        text_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
-        cache_key = f"deberta:{artifact_id}:{text_hash}"
+        # 3. Cache lookup (strictly gated by valid non-empty fingerprint and non-probe request)
+        can_cache = probe_id is None and fingerprint is not None
+        cache_key: Optional[str] = None
 
-        if probe_id is None:
+        if can_cache:
+            text_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()
+            cache_key = f"model:{fingerprint}:{text_hash}"
             cached_output = self._prediction_cache.get(cache_key)
             if cached_output is not None:
                 # If a mock adapter has been explicitly reprogrammed with a different return_value,
@@ -406,7 +466,7 @@ class ModelInferenceService:
                 else:
                     return cached_output
 
-        # 4. Model inference on cache miss (or probe request)
+        # 4. Model inference on cache miss (or cache bypass / probe request)
         try:
             raw_output = self.adapter.predict(cleaned_text)
             self._circuit_breaker.record_success(probe_id)
@@ -435,7 +495,8 @@ class ModelInferenceService:
                 confidence=float(raw_output.confidence),
             )
 
-        # 6. Cache insertion
-        self._prediction_cache.set(cache_key, validated_output)
+        # 6. Cache insertion on successful inference (strictly gated by valid non-empty fingerprint)
+        if can_cache and cache_key is not None:
+            self._prediction_cache.set(cache_key, validated_output)
 
         return validated_output

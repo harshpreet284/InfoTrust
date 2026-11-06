@@ -15,6 +15,7 @@ import os
 import urllib.parse
 from datetime import timedelta
 from pathlib import Path
+from typing import Optional
 
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
@@ -45,6 +46,33 @@ INFOTRUST_ENV = os.environ.get("INFOTRUST_ENV", "production").strip().lower()
 MODEL_ALLOW_UNMANIFESTED_ARTIFACTS = os.environ.get(
     "MODEL_ALLOW_UNMANIFESTED_ARTIFACTS", "False"
 ).strip().lower() in ("true", "1")
+
+# AI Model Configuration (AI-017)
+# Canonical setting: MODEL_ARTIFACT_PATH (with MODEL_PATH as backward-compatible fallback)
+_raw_artifact_path = (
+    os.environ.get("MODEL_ARTIFACT_PATH", "").strip()
+    or os.environ.get("MODEL_PATH", "").strip()
+)
+MODEL_ARTIFACT_PATH: Optional[str] = _raw_artifact_path if _raw_artifact_path else None
+
+# Active model version identifier (validated non-empty)
+_raw_model_version = os.environ.get("MODEL_VERSION", "v1").strip()
+if not _raw_model_version:
+    raise ImproperlyConfigured("MODEL_VERSION environment variable cannot be empty.")
+MODEL_VERSION: str = _raw_model_version
+
+# Startup Check Control
+MODEL_STARTUP_CHECK_ENABLED: bool = os.environ.get(
+    "MODEL_STARTUP_CHECK_ENABLED", "True"
+).strip().lower() in ("true", "1")
+
+# Production Fail-Closed Policy:
+# MODEL_STARTUP_CHECK_ENABLED cannot be disabled in production or staging.
+if INFOTRUST_ENV in ("production", "staging") and not MODEL_STARTUP_CHECK_ENABLED:
+    raise ImproperlyConfigured(
+        f"MODEL_STARTUP_CHECK_ENABLED cannot be set to False in environment '{INFOTRUST_ENV}'. "
+        "Mandatory model artifact preflight validation cannot be bypassed in production or staging."
+    )
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 

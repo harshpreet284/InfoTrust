@@ -303,6 +303,8 @@ class ExplainabilityService:
         narrative_activity: Optional[NarrativeActivity] = None,
         rule_validation_result: Optional[RuleValidationResult] = None,
         similarity_metrics: Optional[SimilarityMetrics] = None,
+        model_version: Optional[str] = None,
+        artifact_fingerprint: Optional[str] = None,
     ) -> ExplainabilityResult:
         """
         Synthesizes an explainability report from hybrid and verdict results,
@@ -515,6 +517,8 @@ class ExplainabilityService:
                 k: v.value for k, v in hybrid_result.signal_statuses.items()
             },
             "coverage_ratio": float(hybrid_result.coverage_ratio),
+            "model_version": model_version,
+            "artifact_fingerprint": artifact_fingerprint,
         }
 
         return ExplainabilityResult(

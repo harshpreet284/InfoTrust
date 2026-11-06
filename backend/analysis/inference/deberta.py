@@ -21,9 +21,16 @@ class DebertaModelAdapter:
     def __init__(
         self,
         loader: Optional[ModelLoader] = None,
+        artifact_path: Optional[str | Path] = None,
         model_version: Optional[str] = None,
     ):
-        self.loader = loader or ModelLoader(model_version=model_version)
+        if loader is not None:
+            self.loader = loader
+        else:
+            self.loader = ModelLoader(
+                artifact_path=artifact_path,
+                model_version=model_version,
+            )
 
     @property
     def model_version(self) -> str:
