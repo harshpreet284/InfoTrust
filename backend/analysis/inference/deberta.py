@@ -33,6 +33,13 @@ class DebertaModelAdapter:
     def artifact_path(self) -> Optional[Path]:
         return self.loader.artifact_path
 
+    @property
+    def artifact_fingerprint(self) -> str:
+        """
+        Returns the verified cryptographic artifact fingerprint bound to this adapter's loader.
+        """
+        return self.loader.artifact_fingerprint
+
     def predict(self, cleaned_text: str) -> ModelOutput:
         """
         Executes model inference on preprocessed, normalized claim text.

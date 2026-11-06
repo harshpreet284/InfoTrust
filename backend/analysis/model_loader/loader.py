@@ -354,6 +354,7 @@ class ModelLoader:
         self._device: Optional[Any] = None
         self._model: Optional[Any] = None
         self._tokenizer: Optional[Any] = None
+        self._fingerprint: Optional[str] = None
         self._load_count: int = 0
         import threading
 
@@ -372,6 +373,16 @@ class ModelLoader:
     @property
     def artifact_path(self) -> Optional[Path]:
         return self._resolved_path
+
+    @property
+    def artifact_fingerprint(self) -> str:
+        """
+        Returns the verified cryptographic artifact fingerprint bound to this validated model instance.
+        Triggers model resolution and manifest validation if not already executed.
+        """
+        if self._fingerprint is None:
+            self.get_model_and_tokenizer()
+        return self._fingerprint
 
     @property
     def device(self) -> Any:
@@ -803,6 +814,7 @@ class ModelLoader:
             self._model = ModelLoader._cached_model
             self._tokenizer = ModelLoader._cached_tokenizer
             self._resolved_path = resolved_path
+            self._fingerprint = fingerprint
             return self._model, self._tokenizer
 
         # 3. Cache miss: serialize model loading under process-wide lock
@@ -816,6 +828,7 @@ class ModelLoader:
                 self._model = ModelLoader._cached_model
                 self._tokenizer = ModelLoader._cached_tokenizer
                 self._resolved_path = resolved_path
+                self._fingerprint = fingerprint
                 return self._model, self._tokenizer
 
             # Cold load: full SHA-256 verification of weights
@@ -828,6 +841,7 @@ class ModelLoader:
             ModelLoader._cached_tokenizer = self._tokenizer
             ModelLoader._cached_fingerprint = fingerprint
             ModelLoader._cached_artifact_dir = canonical_dir_str
+            self._fingerprint = fingerprint
 
         return self._model, self._tokenizer
 

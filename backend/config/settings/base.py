@@ -263,6 +263,19 @@ def _get_positive_float_env(var_name: str, default: float) -> float:
     return default
 
 
+def _get_non_negative_float_env(var_name: str, default: float) -> float:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return default
+    try:
+        val = float(raw)
+        if math.isfinite(val) and val >= 0.0:
+            return val
+    except (ValueError, TypeError):
+        pass
+    return default
+
+
 FACT_CHECK_TIMEOUT_SECONDS = _get_positive_float_env("FACT_CHECK_TIMEOUT_SECONDS", 5.0)
 
 
@@ -376,4 +389,21 @@ MODEL_CIRCUIT_BREAKER_TTL_SECONDS = _get_positive_float_env(
 )
 MODEL_CIRCUIT_BREAKER_TRANSIENT_TTL_SECONDS = _get_positive_float_env(
     "MODEL_CIRCUIT_BREAKER_TRANSIENT_TTL_SECONDS", 5.0
+)
+
+# Pipeline Performance Optimization & In-Memory Caching (AI-016)
+MODEL_INFERENCE_CACHE_MAX_ENTRIES = _get_positive_int_env(
+    "MODEL_INFERENCE_CACHE_MAX_ENTRIES", 1024
+)
+FACT_CHECK_CACHE_MAX_ENTRIES = _get_positive_int_env(
+    "FACT_CHECK_CACHE_MAX_ENTRIES", 500
+)
+FACT_CHECK_CACHE_MAX_BYTES = _get_positive_int_env(
+    "FACT_CHECK_CACHE_MAX_BYTES", 2097152
+)
+FACT_CHECK_CACHE_MAX_SINGLE_ENTRY_BYTES = _get_positive_int_env(
+    "FACT_CHECK_CACHE_MAX_SINGLE_ENTRY_BYTES", 65536
+)
+FACT_CHECK_CACHE_TTL_SECONDS = _get_non_negative_float_env(
+    "FACT_CHECK_CACHE_TTL_SECONDS", 3600.0
 )

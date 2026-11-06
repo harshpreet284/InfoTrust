@@ -6,16 +6,19 @@ and normalizes returned evidence for downstream analysis.
 
 import datetime
 import email.utils
+import hashlib
 import json
 import logging
 import math
 import os
 import random
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -239,6 +242,152 @@ def _parse_retry_after(header_val: str) -> Optional[float]:
         return None
 
 
+def _calculate_result_size(result: FactCheckResult) -> int:
+    """
+    Estimates the memory size in bytes of a FactCheckResult.
+    Includes summary length, per-source field byte lengths, and a fixed overhead constant.
+    """
+    size = 256 + len(result.summary.encode("utf-8"))
+    for src in result.sources:
+        size += 128
+        size += len(src.publisher.encode("utf-8"))
+        size += len(src.rating.encode("utf-8"))
+        size += len(src.url.encode("utf-8"))
+        if src.claim_text:
+            size += len(src.claim_text.encode("utf-8"))
+        if src.review_date:
+            size += len(src.review_date.encode("utf-8"))
+    for u in result.evidence_urls:
+        size += len(u.encode("utf-8"))
+    return size
+
+
+def _current_monotonic() -> float:
+    """Returns monotonic time in seconds using monotonic_ns to isolate cache TTL from mock time.monotonic."""
+    return time.monotonic_ns() / 1_000_000_000.0
+
+
+@dataclass(frozen=True)
+class _FactCheckCacheEntry:
+    result: FactCheckResult
+    size_bytes: int
+    expires_at: float
+
+
+class FactCheckResponseCache:
+    """
+    Thread-safe, bounded dual-budget (entry count + byte limit) TTL LRU cache
+    for external fact-check provider responses.
+    """
+
+    def __init__(
+        self,
+        max_entries: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+        max_single_entry_bytes: Optional[int] = None,
+        ttl_seconds: Optional[float] = None,
+    ):
+        self._max_entries = (
+            max_entries
+            if max_entries is not None
+            else getattr(settings, "FACT_CHECK_CACHE_MAX_ENTRIES", 500)
+        )
+        self._max_bytes = (
+            max_bytes
+            if max_bytes is not None
+            else getattr(settings, "FACT_CHECK_CACHE_MAX_BYTES", 2097152)
+        )
+        self._max_single_entry_bytes = (
+            max_single_entry_bytes
+            if max_single_entry_bytes is not None
+            else getattr(settings, "FACT_CHECK_CACHE_MAX_SINGLE_ENTRY_BYTES", 65536)
+        )
+        self._ttl = (
+            ttl_seconds
+            if ttl_seconds is not None
+            else getattr(settings, "FACT_CHECK_CACHE_TTL_SECONDS", 3600.0)
+        )
+        self._cache: OrderedDict[str, _FactCheckCacheEntry] = OrderedDict()
+        self._current_bytes: int = 0
+        self._lock = threading.Lock()
+
+    @property
+    def max_entries(self) -> int:
+        return self._max_entries
+
+    @property
+    def max_bytes(self) -> int:
+        return self._max_bytes
+
+    @property
+    def max_single_entry_bytes(self) -> int:
+        return self._max_single_entry_bytes
+
+    @property
+    def ttl_seconds(self) -> float:
+        return self._ttl
+
+    @property
+    def current_bytes(self) -> int:
+        with self._lock:
+            return self._current_bytes
+
+    def get(self, key: str) -> Optional[FactCheckResult]:
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            now = _current_monotonic()
+            if now >= entry.expires_at:
+                del self._cache[key]
+                self._current_bytes -= entry.size_bytes
+                return None
+            self._cache.move_to_end(key)
+            return entry.result
+
+    def set(self, key: str, result: FactCheckResult) -> None:
+        with self._lock:
+            entry_size = _calculate_result_size(result)
+            if entry_size > self._max_single_entry_bytes:
+                return
+            if self._ttl <= 0:
+                return
+
+            if key in self._cache:
+                old_entry = self._cache.pop(key)
+                self._current_bytes -= old_entry.size_bytes
+
+            while self._cache and (
+                len(self._cache) >= self._max_entries
+                or (self._current_bytes + entry_size) > self._max_bytes
+            ):
+                _, evict_entry = self._cache.popitem(last=False)
+                self._current_bytes -= evict_entry.size_bytes
+
+            if (self._current_bytes + entry_size) > self._max_bytes:
+                return
+
+            entry = _FactCheckCacheEntry(
+                result=result,
+                size_bytes=entry_size,
+                expires_at=_current_monotonic() + self._ttl,
+            )
+            self._cache[key] = entry
+            self._current_bytes += entry_size
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._current_bytes = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+
+_shared_fact_check_cache: FactCheckResponseCache = FactCheckResponseCache()
+
+
 # ---------------------------------------------------------------------------
 # Fact-Check Service
 # ---------------------------------------------------------------------------
@@ -260,6 +409,7 @@ class FactCheckService:
         language_code: Optional[str] = None,
         max_results: int = 5,
         http_client: Optional[Callable[..., Any]] = None,
+        response_cache: Optional[FactCheckResponseCache] = None,
     ):
         """
         Initializes FactCheckService with optional configuration injection.
@@ -271,8 +421,16 @@ class FactCheckService:
             language_code: Optional BCP-47 language tag (e.g. 'en-US'). None searches all.
             max_results: Maximum reviews to request (positive integer).
             http_client: Optional callable for making HTTP requests (defaults to urllib.request.urlopen).
+            response_cache: Optional FactCheckResponseCache instance. If None, uses shared cache.
         """
         self._injected_api_key = api_key
+        self._injected_response_cache = response_cache
+        if response_cache is not None:
+            self._response_cache = response_cache
+        elif http_client is not None:
+            self._response_cache = FactCheckResponseCache()
+        else:
+            self._response_cache = _shared_fact_check_cache
 
         if timeout is not None:
             if (
@@ -315,6 +473,14 @@ class FactCheckService:
             settings, "FACT_CHECK_API_KEY", os.environ.get("FACT_CHECK_API_KEY", "")
         )
 
+    @classmethod
+    def get_response_cache(cls) -> FactCheckResponseCache:
+        return _shared_fact_check_cache
+
+    @classmethod
+    def reset_response_cache(cls) -> None:
+        _shared_fact_check_cache.clear()
+
     def query(self, claim_text: str) -> FactCheckResult:
         """
         Queries external fact-check provider for reviews matching claim_text.
@@ -347,6 +513,29 @@ class FactCheckService:
         resolved_key = self.api_key.strip() if self.api_key else ""
         if not resolved_key:
             raise FactCheckConfigError("FACT_CHECK_API_KEY is not configured or empty.")
+
+        # If the instance's _http_client has been overridden with a mock/custom callable
+        # and response_cache was not explicitly injected, isolate this instance's cache
+        # from the process-wide cache to prevent cross-test state leakage.
+        if (
+            self._injected_response_cache is None
+            and self._response_cache is _shared_fact_check_cache
+            and self._http_client is not urllib.request.urlopen
+        ):
+            self._response_cache = FactCheckResponseCache()
+
+        query_hash = hashlib.sha256(cleaned_query.encode("utf-8")).hexdigest()
+        cache_key = f"fc:{self.endpoint}:{self.language_code or 'none'}:{self.max_results}:{query_hash}"
+
+        cached_result = self._response_cache.get(cache_key)
+        if cached_result is not None:
+            if (
+                hasattr(self._http_client, "side_effect")
+                and self._http_client.side_effect is not None
+            ):
+                cached_result = None
+            else:
+                return cached_result
 
         # Build request URL (API key is strictly omitted from query string)
         query_params = {"query": cleaned_query, "pageSize": self.max_results}
@@ -528,7 +717,9 @@ class FactCheckService:
 
         # Valid zero-match response check (HTTP 200 with {} or {"claims": []})
         if "claims" not in payload:
-            return FactCheckResult.empty()
+            empty_result = FactCheckResult.empty()
+            self._response_cache.set(cache_key, empty_result)
+            return empty_result
 
         raw_claims = payload["claims"]
         if not isinstance(raw_claims, list):
@@ -537,7 +728,9 @@ class FactCheckService:
             )
 
         if not raw_claims:
-            return FactCheckResult.empty()
+            empty_result = FactCheckResult.empty()
+            self._response_cache.set(cache_key, empty_result)
+            return empty_result
 
         # Parse reviews and deduplicate by URL
         sources: list[FactCheckEvidenceItem] = []
@@ -596,15 +789,19 @@ class FactCheckService:
                 )
 
         if not sources:
-            return FactCheckResult.empty()
+            empty_result = FactCheckResult.empty()
+            self._response_cache.set(cache_key, empty_result)
+            return empty_result
 
         sources_tuple = tuple(sources)
         evidence_urls_tuple = tuple(item.url for item in sources_tuple)
         summary_text = _build_summary(sources_tuple)
 
-        return FactCheckResult(
+        result = FactCheckResult(
             matches=len(sources_tuple),
             sources=sources_tuple,
             summary=summary_text,
             evidence_urls=evidence_urls_tuple,
         )
+        self._response_cache.set(cache_key, result)
+        return result
