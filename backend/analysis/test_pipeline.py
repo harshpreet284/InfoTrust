@@ -11,13 +11,17 @@ Validates:
 8. Concurrency CAS invariants (race prevention and soft-deletion protection).
 """
 
+import json
+import math
 import threading
 import time
 import uuid
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db import (
     DatabaseError,
     OperationalError,
@@ -25,7 +29,7 @@ from django.db import (
     connection,
     transaction,
 )
-from django.test import TestCase, TransactionTestCase
+from django.test import Client, TestCase, TransactionTestCase
 
 from analysis.inference.mock import MockModelAdapter
 from analysis.models import Analysis, ModelPrediction, Verdict
@@ -40,9 +44,11 @@ from analysis.services.explainability import (
 from analysis.services.fact_check import (
     FactCheckAuthError,
     FactCheckConfigError,
+    FactCheckEvidenceItem,
     FactCheckInputError,
     FactCheckResult,
     FactCheckService,
+    FactCheckServiceError,
     FactCheckTimeoutError,
 )
 from analysis.services.hybrid import (
@@ -87,17 +93,26 @@ User = get_user_model()
 class MockEmbeddingGenerator:
     """Mock embedder to avoid loading PyTorch / SentenceTransformer."""
 
-    def __init__(self, dim: int = 4):
+    def __init__(self, mapping: dict | None = None, dim: int = 4):
+        self.mapping = mapping or {}
         self.dim = dim
 
     def embed(self, text: str):
-        import numpy as np
-
+        if text in self.mapping:
+            return self.mapping[text]
         return np.ones(self.dim, dtype=np.float32)
 
     def embed_batch(self, texts, batch_size: int = 32):
-        import numpy as np
-
+        if self.mapping:
+            out = [
+                (
+                    self.mapping[t]
+                    if t in self.mapping
+                    else np.ones(self.dim, dtype=np.float32)
+                )
+                for t in texts
+            ]
+            return np.array(out, dtype=np.float32)
         return np.ones((len(texts), self.dim), dtype=np.float32)
 
 
@@ -1186,3 +1201,557 @@ class ConcurrencyCASInvariantsTests(TransactionTestCase):
         self.assertEqual(self.claim.status, ClaimStatus.COMPLETED)
         # Exactly one Analysis record should exist
         self.assertEqual(Analysis.objects.filter(claim=self.claim).count(), 1)
+
+
+class EndToEndPipelineIntegrationTests(TestCase):
+    """
+    End-to-End Pipeline Test Suite (AI-019).
+    Verifies the complete claim analysis lifecycle across all 11 workflow stages:
+    HTTP submission -> preprocessing -> inference -> fact-check -> narrative -> rules
+    -> hybrid aggregation -> verdict -> explainability -> persistence -> HTTP retrieval.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = Client()
+
+        # Users
+        self.user = User.objects.create_user(
+            email="e2e_user@example.com",
+            password="Password123!",
+            full_name="E2E Regular User",
+            role="USER",
+        )
+        self.other_user = User.objects.create_user(
+            email="e2e_other@example.com",
+            password="Password123!",
+            full_name="E2E Other User",
+            role="USER",
+        )
+        self.admin = User.objects.create_user(
+            email="e2e_admin@example.com",
+            password="Password123!",
+            full_name="E2E Admin",
+            role="ADMIN",
+        )
+
+        # JWT auth headers via real /api/v1/auth/login endpoint
+        resp_user = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps(
+                {"email": "e2e_user@example.com", "password": "Password123!"}
+            ),
+            content_type="application/json",
+        )
+        self.token = resp_user.json()["data"]["access_token"]
+        self.headers = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+
+        resp_other = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps(
+                {"email": "e2e_other@example.com", "password": "Password123!"}
+            ),
+            content_type="application/json",
+        )
+        self.other_token = resp_other.json()["data"]["access_token"]
+        self.other_headers = {"HTTP_AUTHORIZATION": f"Bearer {self.other_token}"}
+
+        resp_admin = self.client.post(
+            "/api/v1/auth/login",
+            data=json.dumps(
+                {"email": "e2e_admin@example.com", "password": "Password123!"}
+            ),
+            content_type="application/json",
+        )
+        self.admin_token = resp_admin.json()["data"]["access_token"]
+        self.admin_headers = {"HTTP_AUTHORIZATION": f"Bearer {self.admin_token}"}
+
+        # Dispatcher in sync mode for deterministic inline execution
+        self.sync_dispatcher = AnalysisPipelineDispatcher(sync_mode=True)
+        set_pipeline_dispatcher(self.sync_dispatcher)
+
+        # Default components for pipeline builder
+        self.mock_adapter = MockModelAdapter(
+            default_prediction=ModelPrediction.CREDIBLE,
+            default_confidence=0.80,
+        )
+        self.model_service = ModelInferenceService(adapter=self.mock_adapter)
+
+        self.fact_check_item = FactCheckEvidenceItem(
+            publisher="PolitiFact",
+            rating="Mostly True",
+            url="https://politifact.com/factchecks/123",
+        )
+        self.fact_check_result = FactCheckResult(
+            matches=1,
+            sources=(self.fact_check_item,),
+            summary="PolitiFact rated this Mostly True.",
+            evidence_urls=(self.fact_check_item.url,),
+        )
+        self.mock_fact_check_service = MagicMock(spec=FactCheckService)
+        self.mock_fact_check_service.query.return_value = self.fact_check_result
+
+        self.mock_embedder = MockEmbeddingGenerator()
+        self.narrative_service = NarrativeActivityService(embedder=self.mock_embedder)
+        self.rule_service = None
+
+        # Patch AnalysisPipelineService in pipeline.py so dispatcher instantiates our configured pipeline
+        self.pipeline_patcher = patch(
+            "analysis.services.pipeline.AnalysisPipelineService",
+            side_effect=self._build_pipeline,
+        )
+        self.pipeline_patcher.start()
+
+    def tearDown(self):
+        self.pipeline_patcher.stop()
+        set_pipeline_dispatcher(None)
+        cache.clear()
+
+    def _build_pipeline(self):
+        return _build_test_pipeline(
+            model_service=self.model_service,
+            fact_check_service=self.mock_fact_check_service,
+            narrative_service=self.narrative_service,
+            rule_service=self.rule_service,
+        )
+
+    def test_e2e_nominal_submission_to_analysis_retrieval(self):
+        claim_text = "The international scientific consortium confirmed solar flares do not cause earthquakes."
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": claim_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+
+        self.assertEqual(resp_post.status_code, 201)
+        post_data = resp_post.json()
+        self.assertTrue(post_data["success"])
+        self.assertEqual(post_data["message"], "Claim submitted successfully.")
+        claim_id = post_data["data"]["id"]
+
+        # 1. Database State Verification
+        claim = Claim.objects.get(id=claim_id)
+        self.assertEqual(claim.status, ClaimStatus.COMPLETED)
+        self.assertFalse(claim.is_deleted)
+
+        analysis = Analysis.objects.get(claim=claim)
+        self.assertEqual(analysis.verdict, Verdict.CREDIBLE.value)
+        self.assertEqual(analysis.credibility_score, 82.4)
+        self.assertEqual(analysis.fact_check_match_count, 1)
+        self.assertEqual(analysis.narrative_match_count, 0)
+
+        # 2. Status API Retrieval (GET /api/v1/analysis/{claim_id}/status)
+        resp_status = self.client.get(
+            f"/api/v1/analysis/{claim_id}/status", **self.headers
+        )
+        self.assertEqual(resp_status.status_code, 200)
+        status_data = resp_status.json()["data"]
+        self.assertEqual(status_data["claim_id"], claim_id)
+        self.assertEqual(status_data["status"], "COMPLETED")
+        self.assertIsNone(status_data["error_code"])
+        self.assertIsNone(status_data["error_message"])
+        self.assertIsNone(status_data["retryable"])
+
+        # 3. Core Summary API Retrieval (GET /api/v1/analysis/{claim_id})
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 200)
+        summary_data = resp_summary.json()["data"]
+        self.assertEqual(summary_data["claim_id"], claim_id)
+        self.assertEqual(summary_data["analysis_status"], "COMPLETED")
+        self.assertEqual(summary_data["verdict"], "CREDIBLE")
+        self.assertEqual(summary_data["credibility_score"], 82.4)
+        self.assertIsNotNone(summary_data["created_at"])
+
+        # 4. Explainability API Retrieval (GET /api/v1/analysis/{claim_id}/explanation)
+        resp_exp = self.client.get(
+            f"/api/v1/analysis/{claim_id}/explanation", **self.headers
+        )
+        self.assertEqual(resp_exp.status_code, 200)
+        exp_data = resp_exp.json()["data"]
+        self.assertEqual(exp_data["verdict"], "CREDIBLE")
+        self.assertEqual(exp_data["credibility_score"], 82.4)
+        self.assertAlmostEqual(
+            exp_data["score_breakdown"]["classification_model"], 32.9, places=1
+        )
+        self.assertAlmostEqual(
+            exp_data["score_breakdown"]["fact_check"], 37.6, places=1
+        )
+        self.assertAlmostEqual(
+            exp_data["score_breakdown"]["rule_engine"], 11.8, places=1
+        )
+        self.assertEqual(exp_data["score_breakdown"]["narrative"], 0.0)
+        self.assertIsInstance(exp_data["reasoning"], list)
+        self.assertGreater(len(exp_data["reasoning"]), 0)
+
+        # 5. Fact-Check API Retrieval (GET /api/v1/analysis/{claim_id}/fact-check)
+        resp_fc = self.client.get(
+            f"/api/v1/analysis/{claim_id}/fact-check", **self.headers
+        )
+        self.assertEqual(resp_fc.status_code, 200)
+        fc_data = resp_fc.json()["data"]
+        self.assertEqual(fc_data["matches_found"], 1)
+        self.assertEqual(len(fc_data["sources"]), 1)
+        self.assertEqual(fc_data["sources"][0]["publisher"], "PolitiFact")
+        self.assertEqual(fc_data["sources"][0]["rating"], "Mostly True")
+        self.assertEqual(
+            fc_data["sources"][0]["url"], "https://politifact.com/factchecks/123"
+        )
+
+        # 6. Narrative Activity API Retrieval (GET /api/v1/analysis/{claim_id}/narrative)
+        resp_narrative = self.client.get(
+            f"/api/v1/analysis/{claim_id}/narrative", **self.headers
+        )
+        self.assertEqual(resp_narrative.status_code, 200)
+        narrative_data = resp_narrative.json()["data"]
+        self.assertEqual(narrative_data["similar_claims"], 0)
+        self.assertEqual(narrative_data["highest_similarity"], 0.0)
+        self.assertEqual(narrative_data["activity_level"], "LOW")
+
+    def test_e2e_status_polling_and_conflict_prior_to_completion(self):
+        claim_text = "The international scientific consortium confirmed solar flares do not cause earthquakes."
+
+        # Submit claim WITHOUT capturing on_commit -> claim is committed as PENDING in DB
+        resp_post = self.client.post(
+            "/api/v1/claims",
+            data=json.dumps({"claim_text": claim_text}),
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # Verify claim in DB is PENDING
+        claim = Claim.objects.get(id=claim_id)
+        self.assertEqual(claim.status, ClaimStatus.PENDING)
+
+        # 1. Status endpoint returns 200 with status PENDING
+        resp_status = self.client.get(
+            f"/api/v1/analysis/{claim_id}/status", **self.headers
+        )
+        self.assertEqual(resp_status.status_code, 200)
+        self.assertEqual(resp_status.json()["data"]["status"], "PENDING")
+
+        # 2. Incompleted analysis endpoints must return 409 Conflict
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 409)
+
+        resp_exp = self.client.get(
+            f"/api/v1/analysis/{claim_id}/explanation", **self.headers
+        )
+        self.assertEqual(resp_exp.status_code, 409)
+
+        resp_fc = self.client.get(
+            f"/api/v1/analysis/{claim_id}/fact-check", **self.headers
+        )
+        self.assertEqual(resp_fc.status_code, 409)
+
+        resp_narrative = self.client.get(
+            f"/api/v1/analysis/{claim_id}/narrative", **self.headers
+        )
+        self.assertEqual(resp_narrative.status_code, 409)
+
+        # 3. Now trigger dispatcher explicitly to complete the analysis
+        dispatched = self.sync_dispatcher.dispatch(uuid.UUID(claim_id))
+        self.assertTrue(dispatched)
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, ClaimStatus.COMPLETED)
+
+        # 4. Now summary retrieval returns 200 OK
+        resp_completed = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_completed.status_code, 200)
+        self.assertEqual(resp_completed.json()["data"]["analysis_status"], "COMPLETED")
+
+    def test_e2e_preprocessing_rejection_lifecycle(self):
+        # 10 raw chars passes ClaimCreateSchema (min_length=10), but collapses to 9 chars in cleaner
+        raw_text = "123456789\u200B"
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": raw_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # Database assertions: claim marked FAILED, no Analysis created
+        claim = Claim.objects.get(id=claim_id)
+        self.assertEqual(claim.status, ClaimStatus.FAILED)
+        self.assertFalse(Analysis.objects.filter(claim=claim).exists())
+
+        # Failure diagnostic created
+        diagnostic = claim.failure_diagnostic
+        self.assertEqual(diagnostic.error_code, "PREPROCESSING_REJECTED")
+        self.assertEqual(diagnostic.failure_stage, "PREPROCESSING")
+        self.assertFalse(diagnostic.retryable)
+
+        # Status API returns FAILED with diagnostics
+        resp_status = self.client.get(
+            f"/api/v1/analysis/{claim_id}/status", **self.headers
+        )
+        self.assertEqual(resp_status.status_code, 200)
+        status_data = resp_status.json()["data"]
+        self.assertEqual(status_data["status"], "FAILED")
+        self.assertEqual(status_data["error_code"], "PREPROCESSING_REJECTED")
+        self.assertFalse(status_data["retryable"])
+
+        # Summary API returns 409 Conflict
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 409)
+
+    def test_e2e_fact_check_failure_graceful_degradation(self):
+        # Simulate fact check provider timeout
+        self.mock_fact_check_service.query.side_effect = FactCheckTimeoutError(
+            "Google Fact Check API connection timed out"
+        )
+        claim_text = "Daily physical activity and balanced diet reduce risk of cardiovascular illness."
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": claim_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # Database assertions: claim completed with degraded score 84.4
+        claim = Claim.objects.get(id=claim_id)
+        self.assertEqual(claim.status, ClaimStatus.COMPLETED)
+
+        analysis = Analysis.objects.get(claim=claim)
+        self.assertEqual(analysis.verdict, Verdict.CREDIBLE.value)
+        self.assertEqual(analysis.credibility_score, 84.4)
+        self.assertIsNone(analysis.fact_check_match_count)
+
+        # Summary API returns 200 OK with valid degraded score
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 200)
+        summary_data = resp_summary.json()["data"]
+        self.assertEqual(summary_data["analysis_status"], "COMPLETED")
+        self.assertEqual(summary_data["verdict"], "CREDIBLE")
+        self.assertEqual(summary_data["credibility_score"], 84.4)
+
+        # Fact-check endpoint returns 200 with empty sources
+        resp_fc = self.client.get(
+            f"/api/v1/analysis/{claim_id}/fact-check", **self.headers
+        )
+        self.assertEqual(resp_fc.status_code, 200)
+        fc_data = resp_fc.json()["data"]
+        self.assertIsNone(fc_data["matches_found"])
+        self.assertEqual(fc_data["sources"], [])
+
+    def test_e2e_insufficient_evidence_null_score(self):
+        # Both model inference and fact checking fail
+        mock_model = MagicMock(spec=ModelInferenceService)
+        mock_model.predict.side_effect = InferenceServiceError(
+            "Model inference failed: GPU crash"
+        )
+        mock_model.get_provenance_snapshot.return_value = (None, None)
+        mock_model.model_version = None
+        mock_model.artifact_fingerprint = None
+        self.model_service = mock_model
+
+        self.mock_fact_check_service.query.side_effect = FactCheckServiceError(
+            "Fact check provider network down"
+        )
+        claim_text = "Daily physical activity and balanced diet reduce risk of cardiovascular illness."
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": claim_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # Database assertions: claim completed with NULL credibility score and UNCERTAIN verdict
+        claim = Claim.objects.get(id=claim_id)
+        self.assertEqual(claim.status, ClaimStatus.COMPLETED)
+
+        analysis = Analysis.objects.get(claim=claim)
+        self.assertIsNone(analysis.credibility_score)
+        self.assertEqual(analysis.verdict, Verdict.UNCERTAIN.value)
+
+        # API assertions: verdict UNCERTAIN, credibility_score is None
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 200)
+        summary_data = resp_summary.json()["data"]
+        self.assertEqual(summary_data["analysis_status"], "COMPLETED")
+        self.assertEqual(summary_data["verdict"], "UNCERTAIN")
+        self.assertIsNone(summary_data["credibility_score"])
+
+        # Explanation endpoint
+        resp_exp = self.client.get(
+            f"/api/v1/analysis/{claim_id}/explanation", **self.headers
+        )
+        self.assertEqual(resp_exp.status_code, 200)
+        exp_data = resp_exp.json()["data"]
+        self.assertEqual(exp_data["verdict"], "UNCERTAIN")
+        self.assertIsNone(exp_data["credibility_score"])
+        self.assertEqual(exp_data["score_breakdown"]["classification_model"], 0.0)
+        self.assertEqual(exp_data["score_breakdown"]["fact_check"], 0.0)
+
+    def test_e2e_narrative_activity_history_detection(self):
+        text_1 = (
+            "Electric vehicles reduce lifetime greenhouse gas emissions substantially."
+        )
+        text_2 = (
+            "Electric cars reduce lifecycle greenhouse gas emissions significantly."
+        )
+
+        vec_1 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        vec_2 = np.array([0.88, math.sqrt(1 - 0.88**2), 0.0], dtype=np.float32)
+
+        embed_mapping = {
+            text_1: vec_1,
+            text_2: vec_2,
+        }
+        self.mock_embedder = MockEmbeddingGenerator(mapping=embed_mapping, dim=3)
+        self.narrative_service = NarrativeActivityService(embedder=self.mock_embedder)
+
+        # 1. Submit Claim 1 and run pipeline to completion
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_1 = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": text_1}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_1.status_code, 201)
+        claim_1_id = resp_1.json()["data"]["id"]
+        c1 = Claim.objects.get(id=claim_1_id)
+        self.assertEqual(c1.status, ClaimStatus.COMPLETED)
+
+        # 2. Submit Claim 2 and run pipeline to completion
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_2 = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": text_2}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_2.status_code, 201)
+        claim_2_id = resp_2.json()["data"]["id"]
+        c2 = Claim.objects.get(id=claim_2_id)
+        self.assertEqual(c2.status, ClaimStatus.COMPLETED)
+
+        # Database check on Claim 2: found Claim 1 with 0.88 similarity
+        analysis_2 = Analysis.objects.get(claim=c2)
+        self.assertEqual(analysis_2.narrative_match_count, 1)
+        self.assertAlmostEqual(analysis_2.highest_similarity_score, 0.88, places=4)
+
+        # Narrative API check on Claim 2
+        resp_narrative = self.client.get(
+            f"/api/v1/analysis/{claim_2_id}/narrative", **self.headers
+        )
+        self.assertEqual(resp_narrative.status_code, 200)
+        narrative_data = resp_narrative.json()["data"]
+        self.assertEqual(narrative_data["similar_claims"], 1)
+        self.assertEqual(narrative_data["highest_similarity"], 88.0)
+        self.assertEqual(narrative_data["activity_level"], "LOW")
+        self.assertIsNotNone(narrative_data["first_seen"])
+        self.assertIsNotNone(narrative_data["latest_occurrence"])
+
+    def test_e2e_authorization_and_ownership_boundaries(self):
+        claim_text = "The international scientific consortium confirmed solar flares do not cause earthquakes."
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": claim_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # 1. Owner can access completed analysis -> 200 OK
+        resp_owner = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_owner.status_code, 200)
+        self.assertEqual(resp_owner.json()["data"]["analysis_status"], "COMPLETED")
+
+        # 2. Other authenticated regular user receives 403 Forbidden
+        resp_other = self.client.get(
+            f"/api/v1/analysis/{claim_id}", **self.other_headers
+        )
+        self.assertEqual(resp_other.status_code, 403)
+        self.assertFalse(resp_other.json()["success"])
+        self.assertEqual(resp_other.json()["error_code"], "PERMISSION_DENIED")
+        self.assertEqual(resp_other.json()["message"], "Forbidden")
+
+        # 3. Admin user has cross-user access -> 200 OK
+        resp_admin = self.client.get(
+            f"/api/v1/analysis/{claim_id}", **self.admin_headers
+        )
+        self.assertEqual(resp_admin.status_code, 200)
+        self.assertEqual(resp_admin.json()["data"]["analysis_status"], "COMPLETED")
+
+        # 4. Unauthenticated request receives 401 Unauthorized
+        resp_anon = self.client.get(f"/api/v1/analysis/{claim_id}")
+        self.assertEqual(resp_anon.status_code, 401)
+
+    def test_e2e_soft_deletion_during_pipeline_processing(self):
+        claim_text = "The international scientific consortium confirmed solar flares do not cause earthquakes."
+
+        real_rule_engine = RuleEngineService()
+
+        def hooked_evaluate(text):
+            # Mid-pipeline hook: claim is in PROCESSING state
+            in_flight = Claim.objects.get(
+                status=ClaimStatus.PROCESSING, is_deleted=False
+            )
+            # Admin user soft-deletes the claim
+            del_resp = self.client.delete(
+                f"/api/v1/claims/{in_flight.id}", **self.admin_headers
+            )
+            self.assertEqual(del_resp.status_code, 204)
+            in_flight.refresh_from_db()
+            self.assertTrue(in_flight.is_deleted)
+            return real_rule_engine.evaluate(text)
+
+        mock_rule_service = MagicMock(spec=RuleEngineService)
+        mock_rule_service.evaluate.side_effect = hooked_evaluate
+        self.rule_service = mock_rule_service
+
+        with self.captureOnCommitCallbacks(execute=True):
+            resp_post = self.client.post(
+                "/api/v1/claims",
+                data=json.dumps({"claim_text": claim_text}),
+                content_type="application/json",
+                **self.headers,
+            )
+        self.assertEqual(resp_post.status_code, 201)
+        claim_id = resp_post.json()["data"]["id"]
+
+        # Database assertions: claim is soft-deleted and remains in PROCESSING (not transitioned to COMPLETED)
+        claim = Claim.objects.get(id=claim_id)
+        self.assertTrue(claim.is_deleted)
+        self.assertEqual(claim.status, ClaimStatus.PROCESSING)
+        self.assertFalse(Analysis.objects.filter(claim=claim).exists())
+
+        # API Assertions: All endpoints return 404 Not Found for soft-deleted claims
+        resp_summary = self.client.get(f"/api/v1/analysis/{claim_id}", **self.headers)
+        self.assertEqual(resp_summary.status_code, 404)
+
+        resp_status = self.client.get(
+            f"/api/v1/analysis/{claim_id}/status", **self.headers
+        )
+        self.assertEqual(resp_status.status_code, 404)
+
+        resp_claim = self.client.get(f"/api/v1/claims/{claim_id}", **self.headers)
+        self.assertEqual(resp_claim.status_code, 404)
+
+        # Even admin receives 404 on deleted analysis
+        resp_admin = self.client.get(
+            f"/api/v1/analysis/{claim_id}", **self.admin_headers
+        )
+        self.assertEqual(resp_admin.status_code, 404)
