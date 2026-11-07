@@ -750,6 +750,99 @@ class NarrativeSimilarityAndActivityTests(TestCase):
                 "Calculated similarity score is non-finite.", str(ctx.exception)
             )
 
+    def test_identical_claim_text_in_history_matches_with_score_one(self):
+        target_text = "The lunar landing took place in 1969."
+        claim = Claim.objects.create(
+            user=self.user,
+            text=target_text,
+            status=ClaimStatus.COMPLETED,
+        )
+        mapping = {
+            target_text: np.array([0.6, 0.8], dtype=np.float32),
+        }
+        mock_embedder = MockEmbeddingGenerator(mapping=mapping, dim=2)
+        service = NarrativeActivityService(embedder=mock_embedder)
+
+        activity = service.evaluate(target_text)
+
+        self.assertEqual(activity.evaluated_candidates_count, 1)
+        self.assertEqual(activity.similar_claims_count, 1)
+        self.assertEqual(len(activity.matches), 1)
+        self.assertEqual(activity.matches[0].claim_id, claim.id)
+        self.assertAlmostEqual(activity.matches[0].similarity_score, 1.0, places=5)
+        self.assertEqual(activity.activity_level, "LOW")
+        self.assertEqual(activity.first_seen, claim.submitted_at)
+        self.assertEqual(activity.latest_occurrence, claim.submitted_at)
+
+    def test_zero_similarity_candidates_yields_empty_matches_and_low_activity(self):
+        target_text = "Climate change trends over recent decades"
+        c1_text = "Unrelated economic inflation forecast"
+        c2_text = "Sports tournament final score report"
+        Claim.objects.create(user=self.user, text=c1_text, status=ClaimStatus.COMPLETED)
+        Claim.objects.create(user=self.user, text=c2_text, status=ClaimStatus.COMPLETED)
+
+        mapping = {
+            target_text: np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            c1_text: np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            c2_text: np.array([-1.0, 0.0, 0.0], dtype=np.float32),
+        }
+        mock_embedder = MockEmbeddingGenerator(mapping=mapping, dim=3)
+        service = NarrativeActivityService(embedder=mock_embedder, threshold=0.80)
+
+        activity = service.evaluate(target_text)
+
+        self.assertEqual(activity.evaluated_candidates_count, 2)
+        self.assertEqual(activity.similar_claims_count, 0)
+        self.assertEqual(activity.matches, ())
+        self.assertIsNone(activity.first_seen)
+        self.assertIsNone(activity.latest_occurrence)
+        self.assertEqual(activity.activity_level, "LOW")
+
+    def test_matches_preserve_temporal_order_of_evaluated_candidates(self):
+        target_text = "Target claim for temporal ordering test"
+        t_recent = self.now - timedelta(hours=1)
+        t_middle = self.now - timedelta(hours=2)
+        t_oldest = self.now - timedelta(hours=3)
+
+        c_recent = Claim.objects.create(
+            user=self.user, text="Recent match text", status=ClaimStatus.COMPLETED
+        )
+        Claim.objects.filter(id=c_recent.id).update(submitted_at=t_recent)
+
+        c_middle = Claim.objects.create(
+            user=self.user, text="Middle match text", status=ClaimStatus.COMPLETED
+        )
+        Claim.objects.filter(id=c_middle.id).update(submitted_at=t_middle)
+
+        c_oldest = Claim.objects.create(
+            user=self.user, text="Oldest match text", status=ClaimStatus.COMPLETED
+        )
+        Claim.objects.filter(id=c_oldest.id).update(submitted_at=t_oldest)
+
+        mapping = {
+            target_text: np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            c_recent.text: np.array(
+                [0.85, math.sqrt(1 - 0.85**2), 0.0], dtype=np.float32
+            ),
+            c_middle.text: np.array(
+                [0.99, math.sqrt(1 - 0.99**2), 0.0], dtype=np.float32
+            ),
+            c_oldest.text: np.array(
+                [0.90, math.sqrt(1 - 0.90**2), 0.0], dtype=np.float32
+            ),
+        }
+        mock_embedder = MockEmbeddingGenerator(mapping=mapping, dim=3)
+        service = NarrativeActivityService(embedder=mock_embedder, threshold=0.80)
+
+        activity = service.evaluate(target_text)
+
+        self.assertEqual(len(activity.matches), 3)
+        self.assertEqual(activity.matches[0].claim_id, c_recent.id)
+        self.assertEqual(activity.matches[1].claim_id, c_middle.id)
+        self.assertEqual(activity.matches[2].claim_id, c_oldest.id)
+        self.assertEqual(activity.first_seen, t_oldest)
+        self.assertEqual(activity.latest_occurrence, t_recent)
+
 
 # ---------------------------------------------------------------------------
 # 4. Privacy, Dataclass Immutability, and Serialization Tests
@@ -903,3 +996,40 @@ class NarrativeAdapterAndErrorHandlingTests(SimpleTestCase):
                 with self.assertRaises(NarrativeInferenceError) as ctx:
                     adapter.embed_batch(["text1", "text2"])
                 self.assertIn("non-finite", str(ctx.exception))
+
+    def test_adapter_single_embed_delegates_to_batch(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = SentenceTransformerEmbeddingAdapter(model_path=tmp_dir)
+
+            expected_vec = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+            with patch.object(
+                adapter,
+                "embed_batch",
+                return_value=np.array([expected_vec], dtype=np.float32),
+            ) as mock_embed_batch:
+                res = adapter.embed("Single input claim")
+                mock_embed_batch.assert_called_once_with(["Single input claim"])
+                self.assertEqual(res.shape, (4,))
+                np.testing.assert_array_almost_equal(res, expected_vec)
+
+    def test_adapter_embed_batch_custom_batch_size(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = SentenceTransformerEmbeddingAdapter(model_path=tmp_dir)
+
+            mock_model = MagicMock()
+            mock_model.encode.return_value = np.array(
+                [[1.0, 0.0], [0.0, 1.0]], dtype=np.float32
+            )
+            mock_st_module = MagicMock()
+            mock_st_module.SentenceTransformer.return_value = mock_model
+
+            with patch.dict("sys.modules", {"sentence_transformers": mock_st_module}):
+                res = adapter.embed_batch(["text1", "text2"], batch_size=16)
+                mock_model.encode.assert_called_once_with(
+                    ["text1", "text2"],
+                    batch_size=16,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                )
+                self.assertEqual(res.shape, (2, 2))

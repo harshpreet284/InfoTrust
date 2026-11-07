@@ -171,6 +171,34 @@ class SimilarityMetricsInvariantsTests(SimpleTestCase):
         self.assertEqual(metrics.average_similarity_percentage, 88)
         self.assertTrue(metrics.has_matches)
 
+    def test_display_percentage_rounding_boundaries(self):
+        # Rounding down (< .5)
+        m_down = SimilarityMetrics(
+            highest_similarity_score=0.944,
+            average_similarity_score=0.504,
+            related_claims_count=1,
+        )
+        self.assertEqual(m_down.highest_similarity_percentage, 94)
+        self.assertEqual(m_down.average_similarity_percentage, 50)
+
+        # Rounding up (> .5)
+        m_up = SimilarityMetrics(
+            highest_similarity_score=0.946,
+            average_similarity_score=0.506,
+            related_claims_count=1,
+        )
+        self.assertEqual(m_up.highest_similarity_percentage, 95)
+        self.assertEqual(m_up.average_similarity_percentage, 51)
+
+        # Extreme boundaries 0.0 and 1.0
+        m_bounds = SimilarityMetrics(
+            highest_similarity_score=1.0,
+            average_similarity_score=0.0,
+            related_claims_count=1,
+        )
+        self.assertEqual(m_bounds.highest_similarity_percentage, 100)
+        self.assertEqual(m_bounds.average_similarity_percentage, 0)
+
     def test_to_dict_structure(self):
         metrics = SimilarityMetrics(
             highest_similarity_score=0.92,
@@ -439,3 +467,42 @@ class SimilarityScoringFromScoresTests(SimpleTestCase):
             self.service.calculate_from_scores([0.8, 1.01])
         with self.assertRaises(SimilarityCalculationError):
             self.service.calculate_from_scores([-0.01, 0.8])
+
+    def test_scores_permutation_invariance(self):
+        scores_1 = [0.95, 0.70, 0.82, 0.88]
+        scores_2 = [0.70, 0.88, 0.95, 0.82]
+        scores_3 = [0.82, 0.95, 0.88, 0.70]
+
+        m1 = self.service.calculate_from_scores(scores_1)
+        m2 = self.service.calculate_from_scores(scores_2)
+        m3 = self.service.calculate_from_scores(scores_3)
+
+        self.assertEqual(m1.highest_similarity_score, m2.highest_similarity_score)
+        self.assertEqual(m2.highest_similarity_score, m3.highest_similarity_score)
+        self.assertAlmostEqual(
+            m1.average_similarity_score, m2.average_similarity_score, places=9
+        )
+        self.assertAlmostEqual(
+            m2.average_similarity_score, m3.average_similarity_score, places=9
+        )
+        self.assertEqual(m1.related_claims_count, m2.related_claims_count)
+
+    def test_calculate_from_scores_accepts_tuple(self):
+        scores_tuple = (0.85, 0.92, 0.78)
+        metrics = self.service.calculate_from_scores(scores_tuple)
+
+        self.assertEqual(metrics.highest_similarity_score, 0.92)
+        self.assertAlmostEqual(
+            metrics.average_similarity_score, sum(scores_tuple) / 3, places=7
+        )
+        self.assertEqual(metrics.related_claims_count, 3)
+
+    def test_numerical_stability_over_large_score_sequence(self):
+        large_scores = [0.8] * 10_000
+        metrics = self.service.calculate_from_scores(large_scores)
+
+        self.assertEqual(metrics.related_claims_count, 10_000)
+        self.assertAlmostEqual(metrics.highest_similarity_score, 0.8, places=7)
+        self.assertAlmostEqual(metrics.average_similarity_score, 0.8, places=7)
+        self.assertEqual(metrics.highest_similarity_percentage, 80)
+        self.assertEqual(metrics.average_similarity_percentage, 80)

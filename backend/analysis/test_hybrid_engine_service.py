@@ -296,6 +296,70 @@ class FactCheckDeduplicationAndConflictTests(SimpleTestCase):
         self.assertFalse(conflict)
         self.assertEqual(status, SignalStatus.UNSCORABLE)
 
+    def test_all_fact_checks_unscorable_reallocates_weights(self):
+        items = (
+            FactCheckEvidenceItem(
+                publisher="Snopes",
+                rating="Satire",
+                url="https://snopes.com/satire1",
+            ),
+            FactCheckEvidenceItem(
+                publisher="Reuters",
+                rating="Explainer",
+                url="https://reuters.com/explainer1",
+            ),
+        )
+        fc_result = FactCheckResult(
+            matches=2,
+            sources=items,
+            summary="Non-evaluative articles",
+            evidence_urls=(items[0].url, items[1].url),
+        )
+        model_out = ModelOutput(
+            prediction=ModelPrediction.CREDIBLE,
+            confidence=0.80,
+        )
+        rule_res = RuleValidationResult(
+            flags={
+                k: False
+                for k in (
+                    "excessive_capitalization",
+                    "duplicate_punctuation",
+                    "clickbait_phrases",
+                    "sensational_language",
+                    "short_or_vague_claim",
+                    "spam_patterns",
+                )
+            },
+            triggered_count=0,
+            credibility_penalty=0.0,
+            rule_score=1.0,
+            observations=(),
+        )
+
+        res = self.engine.aggregate(
+            model_output=model_out,
+            fact_check_result=fc_result,
+            rule_validation_result=rule_res,
+        )
+
+        self.assertEqual(res.overall_status, HybridAnalysisStatus.COMPLETED)
+        self.assertEqual(
+            res.signal_statuses[COMPONENT_FACT_CHECK], SignalStatus.UNSCORABLE
+        )
+        self.assertEqual(res.signal_statuses[COMPONENT_MODEL], SignalStatus.AVAILABLE)
+        self.assertEqual(
+            res.signal_statuses[COMPONENT_RULE_ENGINE], SignalStatus.AVAILABLE
+        )
+        self.assertAlmostEqual(res.coverage_ratio, 0.45, places=4)
+        self.assertAlmostEqual(res.effective_weights[COMPONENT_MODEL], 7 / 9, places=4)
+        self.assertAlmostEqual(
+            res.effective_weights[COMPONENT_RULE_ENGINE], 2 / 9, places=4
+        )
+        self.assertEqual(res.effective_weights[COMPONENT_FACT_CHECK], 0.0)
+        self.assertEqual(res.credibility_score, 84.4)
+        self.assertEqual(res.confidence_level, "MEDIUM")
+
 
 class HybridAggregationTests(SimpleTestCase):
     """Verifies end-to-end signal aggregation, weighting, and status transitions."""
@@ -500,6 +564,121 @@ class HybridAggregationTests(SimpleTestCase):
         self.assertEqual(res.overall_status, HybridAnalysisStatus.COMPLETED)
         self.assertIsNotNone(res.credibility_score)
 
+    def test_complete_four_signal_nominal_aggregation(self):
+        model_out = ModelOutput(
+            prediction=ModelPrediction.CREDIBLE,
+            confidence=0.80,
+        )
+        fc_items = (
+            FactCheckEvidenceItem(
+                publisher="PolitiFact",
+                rating="Mostly True",
+                url="https://politifact.com/pf-true",
+            ),
+        )
+        fc_result = FactCheckResult(
+            matches=1,
+            sources=fc_items,
+            summary="Mostly True",
+            evidence_urls=(fc_items[0].url,),
+        )
+        rule_res = RuleValidationResult(
+            flags={
+                "excessive_capitalization": False,
+                "duplicate_punctuation": False,
+                "clickbait_phrases": False,
+                "sensational_language": False,
+                "short_or_vague_claim": False,
+                "spam_patterns": False,
+            },
+            triggered_count=0,
+            credibility_penalty=0.0,
+            rule_score=1.0,
+            observations=(),
+        )
+        narrative_act = NarrativeActivity(
+            similar_claims_count=2,
+            first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            latest_occurrence=datetime(2026, 1, 10, tzinfo=timezone.utc),
+            activity_level="MEDIUM",
+            evaluated_candidates_count=10,
+            matches=(),
+        )
+
+        res = self.engine.aggregate(
+            model_output=model_out,
+            fact_check_result=fc_result,
+            rule_validation_result=rule_res,
+            narrative_activity=narrative_act,
+        )
+
+        self.assertEqual(res.overall_status, HybridAnalysisStatus.COMPLETED)
+        self.assertEqual(res.confidence_level, "HIGH")
+        self.assertAlmostEqual(res.coverage_ratio, 0.85, places=4)
+        self.assertEqual(res.credibility_score, 82.4)
+        self.assertEqual(
+            res.signal_statuses[COMPONENT_NARRATIVE], SignalStatus.UNSCORABLE
+        )
+        self.assertIsNotNone(res.narrative_context)
+        self.assertEqual(res.narrative_context["activity_level"], "MEDIUM")
+        self.assertEqual(res.narrative_context["similar_claims_count"], 2)
+
+    def test_complete_four_signal_misinformation_aggregation(self):
+        model_out = ModelOutput(
+            prediction=ModelPrediction.MISINFORMATION,
+            confidence=0.90,
+        )
+        fc_items = (
+            FactCheckEvidenceItem(
+                publisher="Snopes",
+                rating="False",
+                url="https://snopes.com/pf-false",
+            ),
+        )
+        fc_result = FactCheckResult(
+            matches=1,
+            sources=fc_items,
+            summary="Debunked false",
+            evidence_urls=(fc_items[0].url,),
+        )
+        rule_res = RuleValidationResult(
+            flags={
+                "excessive_capitalization": True,
+                "duplicate_punctuation": True,
+                "clickbait_phrases": False,
+                "sensational_language": True,
+                "short_or_vague_claim": False,
+                "spam_patterns": False,
+            },
+            triggered_count=3,
+            credibility_penalty=0.15,
+            rule_score=0.85,
+            observations=("3 flags triggered",),
+        )
+        narrative_act = NarrativeActivity(
+            similar_claims_count=7,
+            first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            latest_occurrence=datetime(2026, 1, 15, tzinfo=timezone.utc),
+            activity_level="HIGH",
+            evaluated_candidates_count=20,
+            matches=(),
+        )
+
+        res = self.engine.aggregate(
+            model_output=model_out,
+            fact_check_result=fc_result,
+            rule_validation_result=rule_res,
+            narrative_activity=narrative_act,
+        )
+
+        self.assertEqual(res.overall_status, HybridAnalysisStatus.COMPLETED)
+        self.assertEqual(res.confidence_level, "HIGH")
+        self.assertAlmostEqual(res.coverage_ratio, 0.85, places=4)
+        self.assertEqual(res.credibility_score, 14.1)
+        self.assertIsNotNone(res.narrative_context)
+        self.assertEqual(res.narrative_context["activity_level"], "HIGH")
+        self.assertEqual(res.narrative_context["similar_claims_count"], 7)
+
 
 class FailureMatrixAndVisibilityTests(SimpleTestCase):
     """Verifies error isolation, PARTIAL_FAILURE status, and manifest integrity."""
@@ -621,6 +800,33 @@ class FailureMatrixAndVisibilityTests(SimpleTestCase):
         self.assertEqual(res.failed_components, ())
         self.assertEqual(len(res.error_details), 0)
 
+    def test_component_error_details_mapping(self):
+        res = self.engine.aggregate(
+            model_error=RuntimeError("DeBERTa inference model crashed"),
+            fact_check_error=ValueError("Fact check API connection failed"),
+            rule_error="Custom rule regex failure",
+            narrative_error=Exception("Embedding generator out of memory"),
+        )
+
+        self.assertEqual(res.overall_status, HybridAnalysisStatus.INSUFFICIENT_EVIDENCE)
+        self.assertEqual(res.confidence_level, "NONE")
+        self.assertIsNone(res.credibility_score)
+        self.assertEqual(len(res.failed_components), 4)
+        self.assertEqual(
+            res.error_details[COMPONENT_MODEL], "DeBERTa inference model crashed"
+        )
+        self.assertEqual(
+            res.error_details[COMPONENT_FACT_CHECK],
+            "Fact check API connection failed",
+        )
+        self.assertEqual(
+            res.error_details[COMPONENT_RULE_ENGINE], "Custom rule regex failure"
+        )
+        self.assertEqual(
+            res.error_details[COMPONENT_NARRATIVE],
+            "Embedding generator out of memory",
+        )
+
 
 class ResultImmutabilityAndContractTests(SimpleTestCase):
     """Verifies immutability, invariant enforcement, and serialization of result objects."""
@@ -704,6 +910,22 @@ class ResultImmutabilityAndContractTests(SimpleTestCase):
             self.engine.aggregate(rule_validation_result="not_a_result")  # type: ignore[arg-type]
         with self.assertRaises(HybridInputError):
             self.engine.aggregate(narrative_activity=123)  # type: ignore[arg-type]
+
+    def test_input_contract_validation_invalid_types(self):
+        invalid_types = [True, False, 12345, 99.9, [1, 2, 3], {"key": "val"}]
+        for val in invalid_types:
+            with self.subTest(param="model_output", val=val):
+                with self.assertRaises(HybridInputError):
+                    self.engine.aggregate(model_output=val)  # type: ignore[arg-type]
+            with self.subTest(param="fact_check_result", val=val):
+                with self.assertRaises(HybridInputError):
+                    self.engine.aggregate(fact_check_result=val)  # type: ignore[arg-type]
+            with self.subTest(param="rule_validation_result", val=val):
+                with self.assertRaises(HybridInputError):
+                    self.engine.aggregate(rule_validation_result=val)  # type: ignore[arg-type]
+            with self.subTest(param="narrative_activity", val=val):
+                with self.assertRaises(HybridInputError):
+                    self.engine.aggregate(narrative_activity=val)  # type: ignore[arg-type]
 
     def test_scored_fact_check_item_invariants(self):
         # Valid scorable item

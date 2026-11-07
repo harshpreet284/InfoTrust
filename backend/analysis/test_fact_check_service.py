@@ -3,6 +3,7 @@ Unit tests for FactCheckService (AI-005).
 All tests execute deterministically with 100% mocked HTTP responses and zero live network access.
 """
 
+import datetime
 import io
 import json
 import socket
@@ -25,6 +26,7 @@ from analysis.services.fact_check import (
     FactCheckTimeoutError,
     _is_valid_evidence_url,
     _normalize_url,
+    _parse_retry_after,
 )
 from config.settings.base import _get_positive_float_env
 
@@ -379,6 +381,56 @@ class FactCheckServiceMalformedPayloadTests(SimpleTestCase):
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertIn("code 403", str(ctx.exception))
 
+    def test_query_handles_claims_missing_claim_review_key(self):
+        """Verifies claim items missing 'claimReview' are skipped while valid siblings are processed."""
+        payload = {
+            "claims": [
+                {"text": "Claim without review key"},
+                {
+                    "text": "Claim with valid review",
+                    "claimReview": [
+                        {
+                            "publisher": {"name": "Reuters", "site": "reuters.com"},
+                            "url": "https://reuters.com/factcheck/123",
+                            "textualRating": "False",
+                        }
+                    ],
+                },
+            ]
+        }
+        mock_client = MagicMock(
+            return_value=MockHTTPResponse(json.dumps(payload).encode("utf-8"))
+        )
+        service = FactCheckService(api_key="test-api-key", http_client=mock_client)
+        result = service.query("Test query")
+        self.assertEqual(result.matches, 1)
+        self.assertEqual(result.sources[0].publisher, "Reuters")
+
+    def test_query_skips_non_dict_reviews_and_defaults_missing_publisher_rating(self):
+        """Verifies non-dict reviews are skipped, and reviews missing publisher/rating resolve to defaults."""
+        payload = {
+            "claims": [
+                {
+                    "text": "Claim with irregular review structures",
+                    "claimReview": [
+                        "malformed-string-review",
+                        {"url": "ftp://non-http.com"},
+                        {"url": "https://example.com/check-minimal"},
+                    ],
+                }
+            ]
+        }
+        mock_client = MagicMock(
+            return_value=MockHTTPResponse(json.dumps(payload).encode("utf-8"))
+        )
+        service = FactCheckService(api_key="test-api-key", http_client=mock_client)
+        result = service.query("Test query")
+        self.assertEqual(result.matches, 1)
+        item = result.sources[0]
+        self.assertEqual(item.publisher, "Unknown")
+        self.assertEqual(item.rating, "Unrated")
+        self.assertEqual(item.url, "https://example.com/check-minimal")
+
 
 class FactCheckServiceInputAndConfigValidationTests(SimpleTestCase):
     """Verifies strict validation of input queries, timeout, and API keys."""
@@ -603,3 +655,31 @@ class FactCheckHelpersTests(SimpleTestCase):
         url1 = "https://EXAMPLE.COM/factchecks/article/"
         url2 = "https://example.com/factchecks/article"
         self.assertEqual(_normalize_url(url1), _normalize_url(url2))
+
+    def test_parse_retry_after_delta_seconds(self):
+        """Verifies integer delta-seconds string converts to non-negative float seconds."""
+        self.assertEqual(_parse_retry_after("120"), 120.0)
+        self.assertEqual(_parse_retry_after("0"), 0.0)
+        self.assertEqual(_parse_retry_after("  45  "), 45.0)
+
+    def test_parse_retry_after_http_date(self):
+        """Verifies RFC 7231 formatted date string parses into future seconds or zero for past dates."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        future = now + datetime.timedelta(seconds=60)
+        future_str = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        diff = _parse_retry_after(future_str)
+        self.assertIsInstance(diff, float)
+        self.assertGreater(diff, 50.0)
+        self.assertLessEqual(diff, 60.0)
+
+        past = now - datetime.timedelta(seconds=60)
+        past_str = past.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        self.assertEqual(_parse_retry_after(past_str), 0.0)
+
+    def test_parse_retry_after_malformed_and_negative_returns_none(self):
+        """Verifies malformed strings, negative values, and non-strings return None."""
+        self.assertIsNone(_parse_retry_after("not-a-number"))
+        self.assertIsNone(_parse_retry_after("-10"))
+        self.assertIsNone(_parse_retry_after(""))
+        self.assertIsNone(_parse_retry_after("   "))
+        self.assertIsNone(_parse_retry_after(None))  # type: ignore

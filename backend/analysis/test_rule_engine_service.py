@@ -381,6 +381,49 @@ class RuleEngineIndividualRulesTests(SimpleTestCase):
         )
         self.assertFalse(res.flags["spam_patterns"])
 
+    def test_case_insensitivity_across_heuristics(self) -> None:
+        # Clickbait case insensitivity
+        res_cb = self.service.evaluate(
+            "YoU WoN'T BeLiEvE the outcome of this international meeting"
+        )
+        self.assertTrue(res_cb.flags["clickbait_phrases"])
+
+        # Sensational prefix case insensitivity
+        res_sens = self.service.evaluate(
+            "bReAkInG nEwS: new financial report released today"
+        )
+        self.assertTrue(res_sens.flags["sensational_language"])
+
+        # Spam phrase case insensitivity
+        res_spam = self.service.evaluate(
+            "cLICK HeRe to view official registration details"
+        )
+        self.assertTrue(res_spam.flags["spam_patterns"])
+
+    def test_url_patterns_in_spam_heuristic(self) -> None:
+        test_urls = [
+            "Visit www.unverified-news-site.org/index for updates",
+            "Read summary at bit.ly/health-alert-2024 right now",
+            "Follow discussion on t.co/report99 today",
+            "Documentation found at https://secure.research-gateway.io/paper",
+        ]
+        for claim_text in test_urls:
+            with self.subTest(claim_text=claim_text):
+                res = self.service.evaluate(claim_text)
+                self.assertTrue(res.flags["spam_patterns"])
+
+    def test_acronym_detection_at_boundaries(self) -> None:
+        test_cases = [
+            "NASA and the European Space Agency continue scientific cooperation on Mars.",
+            "Guidelines from CDC, WHO, and NIH were reviewed by health ministers.",
+            "The international treaty was formally ratified by the UN.",
+            "Federal authorities including the FBI (and CIA) submitted testimony.",
+        ]
+        for claim_text in test_cases:
+            with self.subTest(claim_text=claim_text):
+                res = self.service.evaluate(claim_text)
+                self.assertFalse(res.flags["excessive_capitalization"])
+
 
 class RuleEngineScoringAndArchitectureTests(SimpleTestCase):
     """Tests architecture specifications, penalty formulas, and score clamping."""
@@ -432,6 +475,34 @@ class RuleEngineScoringAndArchitectureTests(SimpleTestCase):
         self.assertEqual(res.triggered_count, 3)
         self.assertEqual(res.credibility_penalty, 1.0)  # Clamped at 1.0
         self.assertEqual(res.rule_score, 0.0)  # 1.0 - 1.0 = 0.0
+
+    def test_cumulative_multi_flag_triggering(self) -> None:
+        # Triggers: excessive_capitalization, duplicate_punctuation, clickbait_phrases,
+        # sensational_language, and spam_patterns (5 flags)
+        claim = "BREAKING: YOU WON'T BELIEVE SECRET CURE at http://example.com!!!"
+        res = self.service.evaluate(claim)
+
+        self.assertTrue(res.flags["excessive_capitalization"])
+        self.assertTrue(res.flags["duplicate_punctuation"])
+        self.assertTrue(res.flags["clickbait_phrases"])
+        self.assertTrue(res.flags["sensational_language"])
+        self.assertTrue(res.flags["spam_patterns"])
+        self.assertFalse(res.flags["short_or_vague_claim"])
+
+        self.assertEqual(res.triggered_count, 5)
+        self.assertAlmostEqual(res.credibility_penalty, 0.25, places=4)
+        self.assertAlmostEqual(res.rule_score, 0.75, places=4)
+        self.assertEqual(len(res.observations), 5)
+
+    def test_full_penalty_saturation_clamps_to_zero(self) -> None:
+        # Even if penalty exceeds 1.0, penalty must clamp to 1.0 and rule_score to 0.0
+        service = RuleEngineService(penalty_per_flag=0.30)
+        claim = "BREAKING: YOU WON'T BELIEVE SECRET CURE at http://example.com!!!"
+        res = service.evaluate(claim)
+
+        self.assertEqual(res.triggered_count, 5)  # 5 * 0.30 = 1.50
+        self.assertEqual(res.credibility_penalty, 1.0)
+        self.assertEqual(res.rule_score, 0.0)
 
 
 class RuleEngineInputAndPrivacyTests(SimpleTestCase):

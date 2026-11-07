@@ -28,7 +28,9 @@ class JoinerSanitizationTests(TestCase):
     def test_preserve_emoji_preceded_by_ascii_text(self):
         """Verify compound emoji ZWJ is preserved even when immediately preceded by ASCII letters."""
         raw = "Report by Dr👩\u200d⚕️ is available now."
-        self.assertEqual(preprocess_claim_text(raw), "Report by Dr👩‍⚕️ is available now.")
+        self.assertEqual(
+            preprocess_claim_text(raw), "Report by Dr👩‍⚕️ is available now."
+        )
 
     def test_preserve_emoji_preceded_and_followed_by_ascii(self):
         """Verify compound emoji ZWJ is preserved when touched by ASCII on both sides."""
@@ -149,6 +151,13 @@ class JoinerSanitizationTests(TestCase):
             "Notice with ️️ detached symbols.",
         )
 
+    def test_remove_joiners_between_ascii_digits(self):
+        """Verify ZWJ and ZWNJ injected between ASCII digits are removed to prevent obfuscation."""
+        raw = "The budget is 1\u200d000\u200c000 dollars."
+        self.assertEqual(
+            preprocess_claim_text(raw),
+            "The budget is 1000000 dollars.",
+        )
 
 
 class TargetedCharacterFilteringTests(TestCase):
@@ -219,6 +228,14 @@ class TargetedCharacterFilteringTests(TestCase):
         self.assertEqual(
             preprocess_claim_text(raw),
             "Warning ⚠️ and medical ⚕️ advisory.",
+        )
+
+    def test_remove_form_feed_and_vertical_tab(self):
+        """Verify form feed (\x0c) and vertical tab (\x0b) are stripped as Cc control characters."""
+        raw = "Claim with form\x0cfeed and vertical\x0btab."
+        self.assertEqual(
+            preprocess_claim_text(raw),
+            "Claim with formfeed and verticaltab.",
         )
 
 
@@ -342,6 +359,32 @@ class LengthAndBoundaryTests(TestCase):
         raw = f"Claim {emoji} text"  # "Claim " (6) + emoji (4) + " text" (5) = 15 code points
         cleaned = preprocess_claim_text(raw)
         self.assertEqual(len(cleaned), 15)
+
+    def test_raw_text_exceeding_max_length_collapsing_to_valid_length(self):
+        """Verify raw text > 2000 chars is accepted if post-cleaning length is <= 2000 chars."""
+        # 1900 chars + 150 whitespace chars + 90 chars = 2140 raw chars -> 1991 clean chars
+        raw = ("A" * 1900) + ("   " * 50) + ("B" * 90)
+        cleaned = preprocess_claim_text(raw)
+        self.assertEqual(len(cleaned), 1991)
+        self.assertTrue(cleaned.startswith("A" * 1900 + " B"))
+
+    def test_post_cleaning_exact_nine_chars_rejected(self):
+        """Verify string that collapses to exactly 9 characters triggers minimum length error."""
+        raw = "123456789\u200B"  # 9 digits + 1 ZWSP = 10 raw chars -> 9 clean chars
+        with self.assertRaises(ClaimPreprocessingError) as ctx:
+            preprocess_claim_text(raw)
+        self.assertIn("too short (9 characters)", str(ctx.exception))
+        self.assertIn(
+            f"Minimum length is {MIN_CLAIM_LENGTH} characters.", str(ctx.exception)
+        )
+
+    def test_astral_plane_emoji_code_point_length(self):
+        """Verify non-BMP emojis count as single code points in Python length calculation."""
+        # 💉 is U+1F489 (single code point in Python str)
+        raw = "Vaccine 💉: verified safe"
+        cleaned = preprocess_claim_text(raw)
+        self.assertEqual(len(cleaned), 24)
+        self.assertEqual(cleaned, "Vaccine 💉: verified safe")
 
 
 class ContractAndTypeTests(TestCase):

@@ -5,13 +5,22 @@ from django.conf import settings
 
 from analysis.inference import MockModelAdapter, ModelAdapterProtocol, ModelOutput
 from analysis.inference.deberta import ModelInferenceError
-from analysis.model_loader import ModelLoader, ModelLoadingError
+from analysis.model_loader.loader import (
+    ModelArtifactCorruptedError,
+    ModelArtifactNotFoundError,
+    ModelLoader,
+    ModelLoadingError,
+)
 from analysis.models import ModelPrediction
 from analysis.services import (
     InferenceServiceError,
     InvalidModelInputError,
     InvalidModelOutputError,
     ModelInferenceService,
+)
+from analysis.services.inference import (
+    InferencePredictionCache,
+    ModelCircuitBreakerOpenError,
 )
 
 
@@ -23,8 +32,14 @@ class ModelInferenceServiceTests(TestCase):
     """
 
     def setUp(self):
+        ModelInferenceService.reset_circuit_breaker()
+        ModelInferenceService.reset_prediction_cache()
         self.mock_adapter = MagicMock(spec=ModelAdapterProtocol)
         self.service = ModelInferenceService(adapter=self.mock_adapter)
+
+    def tearDown(self):
+        ModelInferenceService.reset_circuit_breaker()
+        ModelInferenceService.reset_prediction_cache()
 
     # -------------------------------------------------------------------------
     # 1. Successful Predictions & Full Precision Preservation
@@ -163,6 +178,24 @@ class ModelInferenceServiceTests(TestCase):
         self.assertIn("Model inference failed", str(ctx.exception))
         self.assertIsInstance(ctx.exception.__cause__, ModelLoadingError)
 
+    def test_adapter_model_artifact_not_found_error_wrapped(self):
+        self.mock_adapter.predict.side_effect = ModelArtifactNotFoundError(
+            "Artifact directory missing", path="/missing/path"
+        )
+        with self.assertRaises(InferenceServiceError) as ctx:
+            self.service.predict("Cleaned claim.")
+        self.assertIn("Model inference failed", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, ModelArtifactNotFoundError)
+
+    def test_adapter_model_artifact_corrupted_error_wrapped(self):
+        self.mock_adapter.predict.side_effect = ModelArtifactCorruptedError(
+            "Weights digest mismatch"
+        )
+        with self.assertRaises(InferenceServiceError) as ctx:
+            self.service.predict("Cleaned claim.")
+        self.assertIn("Model inference failed", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, ModelArtifactCorruptedError)
+
     def test_unexpected_programming_errors_propagate(self):
         """Verifies unexpected bugs (e.g. AttributeError) propagate unmasked without wrapping."""
         self.mock_adapter.predict.side_effect = AttributeError(
@@ -219,3 +252,29 @@ class ModelInferenceServiceTests(TestCase):
         self.assertIsInstance(output, ModelOutput)
         self.assertEqual(output.prediction, ModelPrediction.MISINFORMATION)
         self.assertEqual(output.confidence, 0.99)
+
+    def test_consecutive_inference_failures_trip_circuit_breaker(self):
+        """Verifies successive adapter failures trip the circuit breaker, rejecting further attempts."""
+        self.mock_adapter.predict.side_effect = ModelInferenceError(
+            "Transient GPU crash"
+        )
+        for i in range(3):
+            with self.assertRaises(InferenceServiceError):
+                self.service.predict(f"Failing claim attempt {i}")
+
+        # The 4th call must be blocked immediately by circuit breaker without invoking adapter
+        with self.assertRaises(ModelCircuitBreakerOpenError):
+            self.service.predict("Next claim blocked by open breaker")
+
+    def test_unmanaged_adapter_without_fingerprint_bypasses_cache(self):
+        """Verifies an adapter lacking artifact_fingerprint executes inference while bypassing caching."""
+        cache = InferencePredictionCache(max_entries=10)
+        custom_adapter = MagicMock(spec=["predict"])
+        custom_adapter.predict.return_value = ModelOutput(
+            prediction=ModelPrediction.CREDIBLE,
+            confidence=0.88,
+        )
+        service = ModelInferenceService(adapter=custom_adapter, prediction_cache=cache)
+        out = service.predict("Claim without adapter fingerprint")
+        self.assertEqual(out.prediction, ModelPrediction.CREDIBLE)
+        self.assertEqual(len(cache), 0)  # Caching must be bypassed
