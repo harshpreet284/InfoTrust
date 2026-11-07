@@ -21,6 +21,7 @@ from analysis.services.explainability import (
     DETAIL_NO_EVIDENCE,
     DETAIL_NOT_SUPPLIED,
     DETAIL_SUMMARY_ONLY,
+    DETAIL_UNSCORABLE,
     ExplainabilityInputError,
     ExplainabilityService,
 )
@@ -362,6 +363,112 @@ class ModelExplanationTests(SimpleTestCase):
             model_exp["summary"],
         )
 
+    def test_model_explanation_no_evidence_and_failed(self):
+        # Case A: NO_EVIDENCE
+        hybrid_no_ev = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.NO_EVIDENCE,
+                COMPONENT_FACT_CHECK: SignalStatus.AVAILABLE,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.AVAILABLE,
+            },
+            component_scores={
+                COMPONENT_MODEL: None,
+                COMPONENT_FACT_CHECK: 0.80,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.95,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.0,
+                COMPONENT_FACT_CHECK: 0.80,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.20,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 0.0,
+                COMPONENT_FACT_CHECK: 64.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 19.0,
+            },
+        )
+        res_no_ev = self.service.generate_explainability(
+            hybrid_no_ev, self.verdict_res, model_output=None
+        )
+        m_exp_no_ev = res_no_ev.model_explanation
+        self.assertEqual(m_exp_no_ev["detail_status"], DETAIL_NO_EVIDENCE)
+        self.assertEqual(m_exp_no_ev["signal_status"], SignalStatus.NO_EVIDENCE.value)
+        self.assertIsNone(m_exp_no_ev["component_score"])
+        self.assertEqual(m_exp_no_ev["effective_weight"], 0.0)
+        self.assertEqual(m_exp_no_ev["weighted_contribution"], 0.0)
+        self.assertIsNone(m_exp_no_ev["prediction"])
+        self.assertIsNone(m_exp_no_ev["confidence"])
+        self.assertEqual(
+            m_exp_no_ev["summary"],
+            "AI classification model inference was not provided for this claim.",
+        )
+
+        # Case B: FAILED
+        hybrid_failed = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.FAILED,
+                COMPONENT_FACT_CHECK: SignalStatus.AVAILABLE,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.AVAILABLE,
+            },
+            failed_components=(COMPONENT_MODEL,),
+            error_details={COMPONENT_MODEL: "Model inference service timeout"},
+            component_scores={
+                COMPONENT_MODEL: None,
+                COMPONENT_FACT_CHECK: 0.80,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.95,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.0,
+                COMPONENT_FACT_CHECK: 0.80,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.20,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 0.0,
+                COMPONENT_FACT_CHECK: 64.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 19.0,
+            },
+        )
+        verdict_failed = _build_nominal_verdict_result(
+            failed_components=(COMPONENT_MODEL,),
+            error_details={COMPONENT_MODEL: "Model inference service timeout"},
+        )
+        res_failed = self.service.generate_explainability(
+            hybrid_failed, verdict_failed, model_output=None
+        )
+        m_exp_failed = res_failed.model_explanation
+        self.assertEqual(m_exp_failed["detail_status"], DETAIL_FAILED)
+        self.assertEqual(m_exp_failed["signal_status"], SignalStatus.FAILED.value)
+        self.assertIsNone(m_exp_failed["component_score"])
+        self.assertEqual(m_exp_failed["effective_weight"], 0.0)
+        self.assertEqual(m_exp_failed["weighted_contribution"], 0.0)
+        self.assertIsNone(m_exp_failed["prediction"])
+        self.assertIsNone(m_exp_failed["confidence"])
+        self.assertEqual(
+            m_exp_failed["summary"],
+            "AI classification model failed during processing.",
+        )
+
+    def test_model_explanation_confidence_percentage_formatting(self):
+        model_out = ModelOutput(prediction=ModelPrediction.CREDIBLE, confidence=0.884)
+        hybrid_res = _build_nominal_hybrid_result(confidence_level="MEDIUM")
+        verdict_res = _build_nominal_verdict_result(confidence_level="MEDIUM")
+        res = self.service.generate_explainability(
+            hybrid_res, verdict_res, model_output=model_out
+        )
+        self.assertEqual(res.model_explanation["detail_status"], DETAIL_FULL)
+        self.assertEqual(res.model_explanation["confidence"], 0.884)
+        self.assertIn("88.4% confidence", res.model_explanation["summary"])
+        self.assertIn("88.4% confidence", res.reasoning[0])
+        self.assertEqual(res.confidence_level, "MEDIUM")
+
 
 class FactCheckExplanationTests(SimpleTestCase):
     """Verifies fact-check explanation, conflict preservation, and source integrity."""
@@ -410,6 +517,158 @@ class FactCheckExplanationTests(SimpleTestCase):
         self.assertTrue(res.fact_check_explanation["has_conflict"])
         self.assertTrue(
             any("conflicting ratings across publishers" in s for s in res.reasoning)
+        )
+
+    def test_fact_check_explanation_no_evidence_failed_and_unscorable(self):
+        # Case A: NO_EVIDENCE
+        hybrid_no_ev = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.AVAILABLE,
+                COMPONENT_FACT_CHECK: SignalStatus.NO_EVIDENCE,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.AVAILABLE,
+            },
+            component_scores={
+                COMPONENT_MODEL: 0.96,
+                COMPONENT_FACT_CHECK: None,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.95,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.77,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.23,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 73.92,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 21.85,
+            },
+        )
+        res_no_ev = self.service.generate_explainability(
+            hybrid_no_ev, self.verdict_res, fact_check_result=None
+        )
+        fc_no_ev = res_no_ev.fact_check_explanation
+        self.assertEqual(fc_no_ev["detail_status"], DETAIL_NO_EVIDENCE)
+        self.assertEqual(fc_no_ev["signal_status"], SignalStatus.NO_EVIDENCE.value)
+        self.assertIsNone(fc_no_ev["component_score"])
+        self.assertEqual(fc_no_ev["matches_count"], 0)
+        self.assertEqual(fc_no_ev["sources"], ())
+        self.assertEqual(
+            fc_no_ev["summary"],
+            "No external fact-check reviews were found for this claim.",
+        )
+
+        # Case B: FAILED
+        hybrid_failed = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.AVAILABLE,
+                COMPONENT_FACT_CHECK: SignalStatus.FAILED,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.AVAILABLE,
+            },
+            failed_components=(COMPONENT_FACT_CHECK,),
+            error_details={
+                COMPONENT_FACT_CHECK: "Fact-checking database connection timeout"
+            },
+            component_scores={
+                COMPONENT_MODEL: 0.96,
+                COMPONENT_FACT_CHECK: None,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.95,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.77,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.23,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 73.92,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 21.85,
+            },
+        )
+        verdict_failed = _build_nominal_verdict_result(
+            failed_components=(COMPONENT_FACT_CHECK,),
+            error_details={
+                COMPONENT_FACT_CHECK: "Fact-checking database connection timeout"
+            },
+        )
+        res_failed = self.service.generate_explainability(
+            hybrid_failed, verdict_failed, fact_check_result=None
+        )
+        fc_failed = res_failed.fact_check_explanation
+        self.assertEqual(fc_failed["detail_status"], DETAIL_FAILED)
+        self.assertEqual(fc_failed["signal_status"], SignalStatus.FAILED.value)
+        self.assertIsNone(fc_failed["component_score"])
+        self.assertIsNone(fc_failed["matches_count"])
+        self.assertEqual(fc_failed["sources"], ())
+        self.assertEqual(
+            fc_failed["summary"],
+            "External fact-check service failed during evaluation.",
+        )
+
+        # Case C: UNSCORABLE (preserves ambiguous matches and sources)
+        ambiguous_item = FactCheckEvidenceItem(
+            publisher="Snopes",
+            rating="Unproven",
+            url="https://www.snopes.com/fact-check/ambiguous-claim/",
+            review_date="2026-03-15",
+        )
+        fc_res_unscorable = FactCheckResult(
+            matches=1,
+            sources=(ambiguous_item,),
+            summary="Claim reviewed with ambiguous rating.",
+            evidence_urls=("https://www.snopes.com/fact-check/ambiguous-claim/",),
+        )
+        hybrid_unscorable = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.AVAILABLE,
+                COMPONENT_FACT_CHECK: SignalStatus.UNSCORABLE,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.AVAILABLE,
+            },
+            component_scores={
+                COMPONENT_MODEL: 0.96,
+                COMPONENT_FACT_CHECK: None,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.95,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.77,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.23,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 73.92,
+                COMPONENT_FACT_CHECK: 0.0,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 21.85,
+            },
+        )
+        res_unscorable = self.service.generate_explainability(
+            hybrid_unscorable, self.verdict_res, fact_check_result=fc_res_unscorable
+        )
+        fc_unscorable = res_unscorable.fact_check_explanation
+        self.assertEqual(fc_unscorable["detail_status"], DETAIL_UNSCORABLE)
+        self.assertEqual(fc_unscorable["signal_status"], SignalStatus.UNSCORABLE.value)
+        self.assertIsNone(fc_unscorable["component_score"])
+        self.assertEqual(fc_unscorable["matches_count"], 1)
+        self.assertEqual(len(fc_unscorable["sources"]), 1)
+        self.assertEqual(fc_unscorable["sources"][0]["publisher"], "Snopes")
+        self.assertEqual(fc_unscorable["sources"][0]["rating"], "Unproven")
+        self.assertEqual(
+            fc_unscorable["sources"][0]["url"],
+            "https://www.snopes.com/fact-check/ambiguous-claim/",
+        )
+        self.assertEqual(
+            fc_unscorable["summary"],
+            "External fact-check reviews were found, but publisher ratings were ambiguous or unscorable.",
         )
 
 
@@ -585,6 +844,83 @@ class RuleEngineExplanationTests(SimpleTestCase):
             ["Sensational or alarmist language detected."],
         )
 
+    def test_rule_explanation_zero_flags_and_failed(self):
+        # Case A: Clean linguistic baseline with zero triggered flags and 0.0 penalty
+        clean_rule_res = RuleValidationResult(
+            flags={
+                "excessive_capitalization": False,
+                "duplicate_punctuation": False,
+                "clickbait_phrases": False,
+                "sensational_language": False,
+                "short_or_vague_claim": False,
+                "spam_patterns": False,
+            },
+            triggered_count=0,
+            credibility_penalty=0.0,
+            rule_score=1.0,
+            observations=(),
+        )
+        res_clean = self.service.generate_explainability(
+            self.hybrid_res, self.verdict_res, rule_validation_result=clean_rule_res
+        )
+        rule_clean = res_clean.rule_explanation
+        self.assertEqual(rule_clean["detail_status"], DETAIL_FULL)
+        self.assertEqual(rule_clean["signal_status"], SignalStatus.AVAILABLE.value)
+        self.assertEqual(rule_clean["penalty_applied"], 0.0)
+        self.assertEqual(rule_clean["flags_triggered"], ())
+        self.assertEqual(rule_clean["observations"], ())
+        self.assertEqual(
+            rule_clean["summary"],
+            "Deterministic rule heuristics detected no sensationalism, clickbait, or deceptive patterns.",
+        )
+
+        # Case B: FAILED evaluation
+        hybrid_rule_failed = _build_nominal_hybrid_result(
+            signal_statuses={
+                COMPONENT_MODEL: SignalStatus.AVAILABLE,
+                COMPONENT_FACT_CHECK: SignalStatus.AVAILABLE,
+                COMPONENT_NARRATIVE: SignalStatus.UNSCORABLE,
+                COMPONENT_RULE_ENGINE: SignalStatus.FAILED,
+            },
+            failed_components=(COMPONENT_RULE_ENGINE,),
+            error_details={COMPONENT_RULE_ENGINE: "Regex evaluation syntax error"},
+            component_scores={
+                COMPONENT_MODEL: 0.96,
+                COMPONENT_FACT_CHECK: 0.80,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: None,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.47,
+                COMPONENT_FACT_CHECK: 0.53,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.0,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 45.12,
+                COMPONENT_FACT_CHECK: 42.40,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.0,
+            },
+        )
+        verdict_rule_failed = _build_nominal_verdict_result(
+            failed_components=(COMPONENT_RULE_ENGINE,),
+            error_details={COMPONENT_RULE_ENGINE: "Regex evaluation syntax error"},
+        )
+        res_failed = self.service.generate_explainability(
+            hybrid_rule_failed, verdict_rule_failed, rule_validation_result=None
+        )
+        rule_failed = res_failed.rule_explanation
+        self.assertEqual(rule_failed["detail_status"], DETAIL_FAILED)
+        self.assertEqual(rule_failed["signal_status"], SignalStatus.FAILED.value)
+        self.assertIsNone(rule_failed["penalty_applied"])
+        self.assertIsNone(rule_failed["component_score"])
+        self.assertEqual(rule_failed["flags_triggered"], ())
+        self.assertEqual(
+            rule_failed["summary"],
+            "Rule heuristics evaluation failed during processing.",
+        )
+
 
 class NumericalIntegrityTests(SimpleTestCase):
     """Verifies numerical score preservation, genuine zero handling, and no recalculation."""
@@ -647,6 +983,187 @@ class NumericalIntegrityTests(SimpleTestCase):
         # Missing scores must remain None
         self.assertIsNone(res.score_breakdown[COMPONENT_NARRATIVE]["component_score"])
         self.assertIsNone(res.score_breakdown[COMPONENT_RULE_ENGINE]["component_score"])
+
+    def test_score_breakdown_reconciliation_and_rounding(self):
+        """
+        Verifies that individual component weighted contributions are rounded to 2 decimal places,
+        the composite credibility score is rounded to 1 decimal place, and their sum reconciles
+        with the final score within the established tolerance delta of 0.1.
+        """
+        # Canonical weights: model=0.35, fact_check=0.40, rule_engine=0.10 (coverage=0.85)
+        # Scores: model=0.72, fact_check=0.65, rule_engine=0.90
+        # Contributions: model=29.65, fact_check=30.59, rule_engine=10.59, sum=70.83, score=70.8
+        hybrid_res = _build_nominal_hybrid_result(
+            credibility_score=70.8,
+            component_scores={
+                COMPONENT_MODEL: 0.72,
+                COMPONENT_FACT_CHECK: 0.65,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.90,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.35 / 0.85,
+                COMPONENT_FACT_CHECK: 0.40 / 0.85,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.10 / 0.85,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 29.65,
+                COMPONENT_FACT_CHECK: 30.59,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 10.59,
+            },
+        )
+        verdict_res = _build_nominal_verdict_result(
+            verdict=Verdict.CREDIBLE,
+            credibility_score=70.8,
+        )
+
+        res = self.service.generate_explainability(hybrid_res, verdict_res)
+
+        # 1. Final score rounded to 1 decimal place
+        self.assertEqual(res.credibility_score, round(res.credibility_score, 1))
+
+        # 2. Each component contribution rounded to 2 decimal places
+        for comp, sb in res.score_breakdown.items():
+            contrib = sb["weighted_contribution"]
+            self.assertEqual(contrib, round(contrib, 2))
+
+        # 3. Sum of contributions reconciles to final score within delta=0.1
+        total_contributions = sum(
+            sb["weighted_contribution"] for sb in res.score_breakdown.values()
+        )
+        self.assertAlmostEqual(total_contributions, res.credibility_score, delta=0.1)
+
+
+class VerdictExplanationTests(SimpleTestCase):
+    """Verifies composite explainability report generation across verdict threshold boundaries and conflict states."""
+
+    def setUp(self):
+        self.service = ExplainabilityService()
+
+    def test_misinformation_verdict_explanation(self):
+        # Credibility score < 40.0 produces MISINFORMATION verdict with definitive classification
+        hybrid_misinfo = _build_nominal_hybrid_result(
+            credibility_score=22.4,
+            confidence_level="HIGH",
+            component_scores={
+                COMPONENT_MODEL: 0.20,
+                COMPONENT_FACT_CHECK: 0.15,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.60,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.35 / 0.85,
+                COMPONENT_FACT_CHECK: 0.40 / 0.85,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.10 / 0.85,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 8.24,
+                COMPONENT_FACT_CHECK: 7.06,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 7.06,
+            },
+        )
+        verdict_misinfo = _build_nominal_verdict_result(
+            verdict=Verdict.MISINFORMATION,
+            label="Likely Misinformation",
+            credibility_score=22.4,
+            confidence_level="HIGH",
+            is_definitive=True,
+            reason="Credibility score 22.4 is below misinformation threshold (40.0).",
+        )
+        res = self.service.generate_explainability(hybrid_misinfo, verdict_misinfo)
+
+        self.assertEqual(res.verdict, Verdict.MISINFORMATION)
+        self.assertEqual(res.verdict_label, "Likely Misinformation")
+        self.assertEqual(res.credibility_score, 22.4)
+        self.assertEqual(res.confidence_level, "HIGH")
+        self.assertTrue(res.is_definitive)
+        self.assertEqual(
+            res.verdict_reason,
+            "Credibility score 22.4 is below misinformation threshold (40.0).",
+        )
+        public_dict = res.to_dict()
+        self.assertEqual(public_dict["verdict"], "MISINFORMATION")
+        self.assertEqual(public_dict["credibility_score"], 22.4)
+
+    def test_uncertain_numeric_verdict_explanation(self):
+        # Score in [40.0, 70.0) produces UNCERTAIN verdict with numeric score and non-definitive state
+        hybrid_uncertain = _build_nominal_hybrid_result(
+            credibility_score=52.0,
+            confidence_level="MEDIUM",
+            component_scores={
+                COMPONENT_MODEL: 0.55,
+                COMPONENT_FACT_CHECK: 0.50,
+                COMPONENT_NARRATIVE: None,
+                COMPONENT_RULE_ENGINE: 0.50,
+            },
+            effective_weights={
+                COMPONENT_MODEL: 0.35 / 0.85,
+                COMPONENT_FACT_CHECK: 0.40 / 0.85,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 0.10 / 0.85,
+            },
+            weighted_contributions={
+                COMPONENT_MODEL: 22.65,
+                COMPONENT_FACT_CHECK: 23.53,
+                COMPONENT_NARRATIVE: 0.0,
+                COMPONENT_RULE_ENGINE: 5.88,
+            },
+        )
+        verdict_uncertain = _build_nominal_verdict_result(
+            verdict=Verdict.UNCERTAIN,
+            label="Uncertain",
+            credibility_score=52.0,
+            confidence_level="MEDIUM",
+            is_definitive=False,
+            reason="Credibility score 52.0 falls between thresholds (40.0 and 70.0).",
+        )
+        res = self.service.generate_explainability(hybrid_uncertain, verdict_uncertain)
+
+        self.assertEqual(res.verdict, Verdict.UNCERTAIN)
+        self.assertEqual(res.verdict_label, "Uncertain")
+        self.assertEqual(res.credibility_score, 52.0)
+        self.assertEqual(res.confidence_level, "MEDIUM")
+        self.assertFalse(res.is_definitive)
+        # Verify that numeric UNCERTAIN does NOT contain the missing evidence statement
+        self.assertFalse(any("Primary truth signals" in s for s in res.reasoning))
+
+    def test_fact_check_conflict_preserves_score_driven_verdict(self):
+        # Option A: when score meets credible threshold (76.5 >= 70.0) with conflict,
+        # verdict remains CREDIBLE, confidence downgraded to LOW, has_conflict is True,
+        # and warning appears in reasoning.
+        hybrid_conflict = _build_nominal_hybrid_result(
+            credibility_score=76.5,
+            confidence_level="LOW",
+            fact_check_conflict=True,
+        )
+        verdict_conflict = _build_nominal_verdict_result(
+            verdict=Verdict.CREDIBLE,
+            label="Likely Credible",
+            credibility_score=76.5,
+            confidence_level="LOW",
+            is_definitive=True,
+            fact_check_conflict=True,
+            reason="Credibility score 76.5 meets or exceeds credible threshold (70.0).",
+        )
+        res = self.service.generate_explainability(hybrid_conflict, verdict_conflict)
+
+        self.assertEqual(res.verdict, Verdict.CREDIBLE)
+        self.assertNotEqual(res.verdict, Verdict.UNCERTAIN)
+        self.assertTrue(res.is_definitive)
+        self.assertEqual(res.credibility_score, 76.5)
+        self.assertEqual(res.confidence_level, "LOW")
+        self.assertTrue(res.fact_check_explanation["has_conflict"])
+        self.assertTrue(
+            any(
+                "External fact-check sources contain conflicting ratings across publishers; "
+                "overall confidence was downgraded to LOW." in s
+                for s in res.reasoning
+            )
+        )
 
 
 class InsufficientEvidenceAndPartialFailureTests(SimpleTestCase):
