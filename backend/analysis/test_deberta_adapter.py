@@ -350,9 +350,11 @@ class TokenizerStagingTests(TestCase):
         import time
 
         sync_dir = Path(tempfile.mkdtemp(prefix="test_mp_barrier_"))
+        backend_dir = Path(__file__).resolve().parent.parent
 
         worker_script = (
             "import os, sys, time\n"
+            f"sys.path.insert(0, {str(backend_dir)!r})\n"
             "from pathlib import Path\n"
             "import analysis.model_loader.loader as loader_mod\n"
             "from analysis.model_loader.loader import ModelLoader\n"
@@ -391,6 +393,7 @@ class TokenizerStagingTests(TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    cwd=str(backend_dir),
                 )
                 procs.append(p)
 

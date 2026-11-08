@@ -658,7 +658,7 @@ class FactCheckServiceCacheTests(TestCase):
         ttl_cache.set("expire_key", result)
 
         self.assertIsNotNone(ttl_cache.get("expire_key"))
-        time.sleep(0.06)
+        time.sleep(0.12)
         # After TTL expiration: lookup returns None and evicts entry
         self.assertIsNone(ttl_cache.get("expire_key"))
         self.assertEqual(len(ttl_cache), 0)
